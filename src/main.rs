@@ -10,6 +10,7 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_hal_async::digital::Wait;
 use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio9, PullDown};
+use esp_hal::i2c;
 use esp_hal::{
     clock::ClockControl,
     embassy,
@@ -22,6 +23,8 @@ use esp_println::println;
 use portable_atomic::{AtomicBool, Ordering};
 use strum::EnumCount;
 
+pub mod display;
+use display::I2C7SegDsiplay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
 enum FSM {
@@ -35,6 +38,8 @@ enum FSM {
 
 type ButtonPin = Gpio9<Input<PullUp>>;
 type PhotodiodePin = Gpio0<Input<PullDown>>;
+
+const DISPLAY_LENGTH: usize = 4;
 
 static PHOTODIODE_INPUT: AtomicBool = AtomicBool::new(false);
 static PHOTODIODE_FLAG: AtomicBool = AtomicBool::new(false);
@@ -80,6 +85,11 @@ async fn handle_photodiode(mut photodiode: PhotodiodePin) -> ! {
     }
 }
 
+#[embassy_executor::task]
+async fn handle_segment_display(mut display: I2C7SegDsiplay<DISPLAY_LENGTH>) -> ! {
+    loop {}
+}
+
 #[main]
 async fn main(spawner: Spawner) {
     let peripherals = Peripherals::take();
@@ -96,6 +106,15 @@ async fn main(spawner: Spawner) {
     let photodiode = io.pins.gpio0.into_pull_down_input();
     let button = io.pins.gpio9.into_pull_up_input();
 
+    let i2c = i2c::I2C::new(
+        peripherals.I2C0,
+        io.pins.gpio1,
+        io.pins.gpio2,
+        100_u32.kHz(),
+        &clocks,
+    );
+    let display = I2C7SegDsiplay::<DISPLAY_LENGTH>::new(0, i2c);
+
     esp_hal::interrupt::enable(
         esp_hal::peripherals::Interrupt::GPIO,
         esp_hal::interrupt::Priority::Priority1,
@@ -104,6 +123,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(handle_button(button));
     spawner.must_spawn(handle_photodiode(photodiode));
+    spawner.must_spawn(handle_segment_display(display));
     let mut start_time = None;
     let mut end_time = None;
 
