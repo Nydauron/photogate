@@ -71,11 +71,9 @@ impl<const DISPLAY_SIZE: usize> I2C7SegDsiplay<DISPLAY_SIZE> {
         self.tx.write(HT16K33_BLINK_CMD, &[blinkrate as u8]).await
     }
 
-    pub async fn write_f64<const PRECISION: u32>(&mut self, float: f64) -> Result<(), Error> {
-        let _ = assert!(DISPLAY_SIZE > (PRECISION as usize));
-
+    pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), Error> {
         let mut lhs = float as i64;
-        let mut rhs = ((float - lhs as f64) * (10_u32.pow(PRECISION) as f64)) as u64;
+        let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
         // FIXME: The above u33 to f64 conversion is subject to floating point imprecision
 
         let mut reserve_digits = DISPLAY_SIZE;
