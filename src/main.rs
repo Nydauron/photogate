@@ -51,6 +51,7 @@ static PHOTODIODE_FLAG: AtomicBool = AtomicBool::new(false);
 
 static BUTTON_INPUT: AtomicBool = AtomicBool::new(false);
 static BUTTON_FLAG: AtomicBool = AtomicBool::new(false);
+const SECS_TO_MILLIS: u32 = 1000;
 
 static STATE: Mutex<CriticalSectionRawMutex, FSM> = Mutex::new(FSM::Idle);
 
@@ -190,7 +191,6 @@ async fn main(spawner: Spawner) {
 
                 if let (Some(start), Some(end)) = (start_time, end_time) {
                     let duration = end.duration_since(start);
-                    const SECS_TO_MILLIS: u32 = 1000;
                     println!(
                         "Time: {}",
                         (duration.as_millis() as f64) / (SECS_TO_MILLIS as f64)
