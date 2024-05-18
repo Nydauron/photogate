@@ -8,7 +8,7 @@ use core::ops::{Deref, DerefMut};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_hal_async::digital::Wait;
 use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio9, PullDown};
@@ -134,8 +134,9 @@ async fn main(spawner: Spawner) {
 
     const PREPARTION_SAMPLE_COUNT: u64 = 60;
     let mut prepartion_sample_left = PREPARTION_SAMPLE_COUNT;
+    let mut ticker = Ticker::every(Duration::from_millis(1));
+
     loop {
-        Timer::after(Duration::from_millis(1)).await;
         if BUTTON_FLAG.swap(false, Ordering::AcqRel) {
             *(STATE.lock().await.deref_mut()) = FSM::Prepare;
         }
@@ -212,5 +213,6 @@ async fn main(spawner: Spawner) {
                 *(STATE.lock().await.deref_mut()) = FSM::Idle;
             }
         }
+        ticker.next().await;
     }
 }
