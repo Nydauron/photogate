@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+use core::cmp::max;
 use esp_hal::i2c::Error;
 
 use embedded_hal_async::i2c::I2c;
@@ -99,6 +101,50 @@ impl<const DISPLAY_SIZE: usize> I2C7SegDsiplay<DISPLAY_SIZE> {
 
         self.tx
             .write(HT16K33_BASE_CMD + self.address_offset, &buf)
+            .await
+    }
+
+    // TODO: Test this
+    pub async fn write_fixed(
+        &mut self,
+        mut decimal: u64,
+        precision: u32,
+        offset: usize,
+    ) -> Result<(), Error> {
+        const BUF_LEN: usize = 20;
+        let mut buf = [0_u8; BUF_LEN];
+
+        let mut idx = BUF_LEN - 1;
+        while decimal > 0 {
+            let digit = (decimal % 10) as u8;
+            buf[idx] = digit;
+            decimal /= 10;
+            idx -= 1;
+        }
+
+        let unpadded_digits = buf
+            .iter()
+            .skip_while(|digit| **digit != 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        let dp = max(unpadded_digits.len(), DISPLAY_SIZE) - 1 - precision as usize;
+        let mut display_buf = [0_u8; DISPLAY_SIZE];
+        for (digit, idx) in unpadded_digits
+            .into_iter()
+            .skip(offset)
+            .take(DISPLAY_SIZE)
+            .rev()
+            .zip((0..DISPLAY_SIZE).rev())
+        {
+            display_buf[idx] = digit_segment_encoding::digit_to_mask(digit);
+        }
+
+        if dp < DISPLAY_SIZE {
+            display_buf[dp] |= digit_segment_encoding::DOT;
+        }
+
+        self.tx
+            .write(HT16K33_BASE_CMD + self.address_offset, &display_buf)
             .await
     }
 }
