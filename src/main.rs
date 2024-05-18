@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+extern crate alloc;
+
 use core::ops::{Deref, DerefMut};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -25,6 +27,9 @@ use strum::EnumCount;
 
 pub mod display;
 use display::I2C7SegDsiplay;
+
+#[global_allocator]
+static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
 enum FSM {
