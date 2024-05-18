@@ -54,16 +54,6 @@ static BUTTON_FLAG: AtomicBool = AtomicBool::new(false);
 
 static STATE: Mutex<CriticalSectionRawMutex, FSM> = Mutex::new(FSM::Idle);
 
-#[embassy_executor::task]
-async fn reset_handler(mut button: ButtonPin) -> ! {
-    loop {
-        esp_println::println!("waiting for press");
-        button.wait_for_falling_edge().await.unwrap();
-        esp_println::println!("button press");
-        let mut s = STATE.lock().await;
-        *(s.deref_mut()) = FSM::Prepare;
-    }
-}
 
 // FIXME: Potential bug when using wait_for_low and wait_for_high:
 // A press could in theory trigger (low and then high) in between the await statements
