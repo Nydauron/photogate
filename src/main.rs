@@ -37,7 +37,7 @@ use display::I2C7SegDsiplay;
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
-enum FSM {
+enum FSMStates {
     Idle = 0,
     Prepare,
     Ready,
@@ -54,7 +54,7 @@ static PHOTODIODE_INPUT: Photodiode = Mutex::new(None);
 
 const DISPLAY_LENGTH: usize = 4;
 
-static STATE: Mutex<CriticalSectionRawMutex, FSM> = Mutex::new(FSM::Idle);
+static STATE: Mutex<CriticalSectionRawMutex, FSMStates> = Mutex::new(FSMStates::Idle);
 
 const SECS_TO_MILLIS: u32 = 1000;
 
@@ -257,16 +257,16 @@ async fn main(spawner: Spawner) {
             }
         }
 
-        let state = STATE.lock().await.deref().clone();
+        let state = *STATE.lock().await.deref();
         match state {
-            FSM::Idle => {
+            FSMStates::Idle => {
                 // Wait for button press
                 if button_is_down {
                     // If press, go to Prepare
                     match spawner.spawn(check_laser_is_aligned(&PHOTODIODE_INPUT, &PHOTOGATE_READY))
                     {
                         Ok(_) => {
-                            *(STATE.lock().await.deref_mut()) = FSM::Prepare;
+                            *(STATE.lock().await.deref_mut()) = FSMStates::Prepare;
                             println!("Preparing photogate for timing ...");
                             println!("Hold still ...");
                         }
@@ -274,31 +274,31 @@ async fn main(spawner: Spawner) {
                     }
                 }
             }
-            FSM::Prepare => {
+            FSMStates::Prepare => {
                 // Wait for laser to be aligned correctly
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
                 if PHOTOGATE_READY.signaled() {
                     println!("Photogate is ready!");
                     PHOTOGATE_READY.reset();
-                    *(STATE.lock().await.deref_mut()) = FSM::Ready;
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
                 }
             }
-            FSM::Ready => {
+            FSMStates::Ready => {
                 if !photogate_is_closed {
                     start_time = Some(Instant::now());
                     println!("Photogate beam was broken. Timer started");
 
                     DISPLAY_TIMES.signal((start_time.unwrap(), None));
-                    *(STATE.lock().await.deref_mut()) = FSM::TimerStart;
+                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerStart;
                 }
             }
-            FSM::TimerStart => {
+            FSMStates::TimerStart => {
                 if photogate_is_closed {
-                    *(STATE.lock().await.deref_mut()) = FSM::TimerRunning;
+                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerRunning;
                 }
             }
-            FSM::TimerRunning => {
+            FSMStates::TimerRunning => {
                 // Update segment display
 
                 if !photogate_is_closed {
@@ -306,11 +306,11 @@ async fn main(spawner: Spawner) {
                     println!("Photogate beam was broken. Timer ended");
                     if let Some(start_time) = start_time {
                         DISPLAY_TIMES.signal((start_time, end_time));
-                        *(STATE.lock().await.deref_mut()) = FSM::TimerEnd;
+                        *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd;
                     }
                 }
             }
-            FSM::TimerEnd => {
+            FSMStates::TimerEnd => {
                 // Display time.
 
                 if let (Some(start), Some(end)) = (start_time, end_time) {
@@ -324,7 +324,7 @@ async fn main(spawner: Spawner) {
                 } else {
                     println!("Time was not able to be calculated!");
                 }
-                *(STATE.lock().await.deref_mut()) = FSM::Idle;
+                *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
             }
         }
         ticker.next().await;
