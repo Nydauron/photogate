@@ -49,12 +49,12 @@ const HT16K33_BASE_CMD: u8 = 0x70;
 const HT16K33_BLINK_CMD: u8 = 0x80;
 const HT16K33_BRIGHTNESS_CMD: u8 = 0xE0;
 
-pub struct I2C7SegDsiplay<const DISPLAY_SIZE: usize> {
+pub struct I2C7SegDisplay<const DISPLAY_SIZE: usize> {
     address_offset: u8,
     tx: i2c::I2C<'static, I2C0>,
 }
 
-impl<const DISPLAY_SIZE: usize> I2C7SegDsiplay<DISPLAY_SIZE> {
+impl<const DISPLAY_SIZE: usize> I2C7SegDisplay<DISPLAY_SIZE> {
     pub fn new(address_offset: u8, tx: I2C<'static, I2C0>) -> Self {
         Self { address_offset, tx }
     }

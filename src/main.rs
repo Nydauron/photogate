@@ -31,7 +31,7 @@ use futures::future::{select, Either};
 use strum::EnumCount;
 
 pub mod display;
-use display::I2C7SegDsiplay;
+use display::I2C7SegDisplay;
 
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
@@ -121,7 +121,7 @@ async fn handle_photodiode(
 
 #[embassy_executor::task]
 async fn handle_segment_display(
-    mut display: I2C7SegDsiplay<DISPLAY_LENGTH>,
+    mut display: I2C7SegDisplay<DISPLAY_LENGTH>,
     times: &'static Signal<CriticalSectionRawMutex, (Instant, Option<Instant>)>,
 ) -> ! {
     loop {
@@ -206,7 +206,7 @@ async fn main(spawner: Spawner) {
         100_u32.kHz(),
         &clocks,
     );
-    let display = I2C7SegDsiplay::<DISPLAY_LENGTH>::new(0, i2c);
+    let display = I2C7SegDisplay::<DISPLAY_LENGTH>::new(0, i2c);
 
     esp_hal::interrupt::enable(
         esp_hal::peripherals::Interrupt::GPIO,
