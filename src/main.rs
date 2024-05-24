@@ -184,6 +184,12 @@ async fn check_laser_is_aligned(
 
 #[main]
 async fn main(spawner: Spawner) {
+    unsafe {
+        // freeze occurs when using this
+        // memory range for heap
+        // ALLOCATOR.init(0x3FC8_0000 as *mut u8, 192 * 1024);
+        ALLOCATOR.init(0x5000_0000 as *mut u8, 4 * 1024);
+    }
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
 
