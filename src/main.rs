@@ -217,7 +217,7 @@ async fn main(spawner: Spawner) {
         100_u32.kHz(),
         &clocks,
     );
-    let display = I2C7SegDisplay::<DISPLAY_LENGTH>::new(0, i2c);
+    let mut display = I2C7SegDisplay::<DISPLAY_LENGTH>::new(0, i2c);
 
     esp_hal::interrupt::enable(
         esp_hal::peripherals::Interrupt::GPIO,
@@ -227,7 +227,23 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_photodiode(&PHOTODIODE_INPUT, INPUT_CHANNEL.sender()));
-    spawner.must_spawn(handle_segment_display(display, &DISPLAY_TIMES));
+    let mut tick = Ticker::every(Duration::from_millis(10));
+    let s = Instant::now();
+    display.initialize().await.unwrap();
+    display.set_brightness(15).await.unwrap();
+    loop {
+        let duration = Instant::now() - s;
+        let precision = if duration.as_millis() >= 100_000 {
+            1
+        } else {
+            2
+        };
+        display
+            .write_f64((duration.as_millis() as f64) / 1000_f64, precision)
+            .await
+            .unwrap();
+        tick.next().await;
+    }
     let mut start_time = None;
     let mut end_time = None;
 
