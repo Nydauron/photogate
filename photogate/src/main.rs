@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(generic_const_exprs)]
 
 extern crate alloc;
 
@@ -19,6 +18,7 @@ use embedded_hal_async::digital::Wait;
 use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio9, PullDown};
 use esp_hal::i2c;
+use esp_hal::peripherals::I2C0;
 use esp_hal::{
     clock::ClockControl,
     embassy,
@@ -31,8 +31,7 @@ use esp_println::println;
 use futures::future::{select, Either};
 use strum::EnumCount;
 
-pub mod display;
-use display::I2C7SegDisplay;
+use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
 
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
@@ -122,12 +121,12 @@ async fn handle_photodiode(
 
 #[embassy_executor::task]
 async fn handle_segment_display(
-    mut display: I2C7SegDisplay<DISPLAY_LENGTH>,
+    mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0>>,
     times: &'static Signal<CriticalSectionRawMutex, (Instant, Option<Instant>)>,
 ) -> ! {
     loop {
         display
-            .set_blinkrate(display::H16K33Blinkrate::BlinkOff)
+            .set_blinkrate(H16K33Blinkrate::BlinkOff)
             .await
             .unwrap();
         display.write_f64(0_f64, 2).await.unwrap();
@@ -141,7 +140,7 @@ async fn handle_segment_display(
                 if let Some(end) = opt_end {
                     let diff = end - start;
                     display
-                        .set_blinkrate(display::H16K33Blinkrate::BlinkHalfHz)
+                        .set_blinkrate(H16K33Blinkrate::BlinkHalfHz)
                         .await
                         .unwrap();
                     // TODO: Change back to write_fixed
@@ -217,7 +216,7 @@ async fn main(spawner: Spawner) {
         100_u32.kHz(),
         &clocks,
     );
-    let mut display = I2C7SegDisplay::<DISPLAY_LENGTH>::new(0, i2c);
+    let mut display = AsyncI2C7SegDisplay::<DISPLAY_LENGTH, _>::new(0, i2c);
 
     esp_hal::interrupt::enable(
         esp_hal::peripherals::Interrupt::GPIO,
