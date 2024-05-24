@@ -269,3 +269,99 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
     buf
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_float_to_segment_buffer() {
+        let f = 27.0;
+        let precision = 2;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::TWO & 0xff) as u8,
+            (digit_segment_encoding::TWO >> 8) as u8,
+            (digit_segment_encoding::SEVEN & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::SEVEN >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn leading_zero_float_to_segment_buffer() {
+        let f = 0.25;
+        let precision = 3;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::TWO & 0xff) as u8,
+            (digit_segment_encoding::TWO >> 8) as u8,
+            (digit_segment_encoding::FIVE & 0xff) as u8,
+            (digit_segment_encoding::FIVE >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn right_aligned_float_to_segment_buffer() {
+        let f = 60.5;
+        let precision = 1;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            0x0,
+            0x0,
+            (digit_segment_encoding::SIX & 0xff) as u8,
+            (digit_segment_encoding::SIX >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::FIVE & 0xff) as u8,
+            (digit_segment_encoding::FIVE >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn precise_float_to_segment_buffer() {
+        let f = 10.2;
+        let precision = 2;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::ONE & 0xff) as u8,
+            (digit_segment_encoding::ONE >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::TWO & 0xff) as u8,
+            (digit_segment_encoding::TWO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+}
