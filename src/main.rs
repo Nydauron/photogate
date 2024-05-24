@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![feature(generic_const_exprs)]
 
 extern crate alloc;
 
@@ -143,7 +144,11 @@ async fn handle_segment_display(
                         .set_blinkrate(display::H16K33Blinkrate::BlinkHalfHz)
                         .await
                         .unwrap();
-                    display.write_fixed(diff.as_millis(), 3, 0).await.unwrap();
+                    // TODO: Change back to write_fixed
+                    display
+                        .write_f64(diff.as_millis() as f64 / 1000_f64, 3)
+                        .await
+                        .unwrap();
                 } else {
                     let curr = Instant::now();
                     let diff = curr - start;

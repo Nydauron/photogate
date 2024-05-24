@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
-use core::cmp::max;
+use core::usize;
+
 use esp_hal::i2c::Error;
 
 use embedded_hal_async::i2c::I2c;
@@ -7,19 +7,19 @@ use esp_hal::i2c::I2C;
 use esp_hal::{i2c, peripherals::I2C0};
 
 mod digit_segment_encoding {
-    pub const DOT: u8 = 0b10000000;
-    pub const ZERO: u8 = 0b00111111;
-    pub const ONE: u8 = 0b00000110; // 1
-    pub const TWO: u8 = 0b01011011; // 2
-    pub const THREE: u8 = 0b01001111; // 3
-    pub const FOUR: u8 = 0b01100110; // 4
-    pub const FIVE: u8 = 0b01101101; // 5
-    pub const SIX: u8 = 0b01111101; // 6
-    pub const SEVEN: u8 = 0b00000111; // 7
-    pub const EIGHT: u8 = 0b01111111; // 8
-    pub const NINE: u8 = 0b01101111; // 9
+    pub const DOT: u16 = 0b10000000;
+    pub const ZERO: u16 = 0b00111111;
+    pub const ONE: u16 = 0b00000110;
+    pub const TWO: u16 = 0b01011011;
+    pub const THREE: u16 = 0b01001111;
+    pub const FOUR: u16 = 0b01100110;
+    pub const FIVE: u16 = 0b01101101;
+    pub const SIX: u16 = 0b01111101;
+    pub const SEVEN: u16 = 0b00000111;
+    pub const EIGHT: u16 = 0b01111111;
+    pub const NINE: u16 = 0b01101111;
 
-    pub fn digit_to_mask(digit: u8) -> u8 {
+    pub fn digit_to_mask(digit: u8) -> u16 {
         match digit {
             0 => ZERO,
             1 => ONE,
@@ -46,8 +46,16 @@ pub enum H16K33Blinkrate {
 }
 
 const HT16K33_BASE_CMD: u8 = 0x70;
-const HT16K33_BLINK_CMD: u8 = 0x80;
-const HT16K33_BRIGHTNESS_CMD: u8 = 0xE0;
+const HT16K33_DISPLAY_ON: u8 = 0x01;
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+enum HT16K33Commands {
+    Begin = 0x21,
+    SetSegments = 0x00,
+    SetBlink = 0x80,
+    SetBrightness = 0xE0,
+}
 
 pub struct I2C7SegDisplay<const DISPLAY_SIZE: usize> {
     address_offset: u8,
@@ -59,92 +67,126 @@ impl<const DISPLAY_SIZE: usize> I2C7SegDisplay<DISPLAY_SIZE> {
         Self { address_offset, tx }
     }
 
-    pub async fn set_brightness(&mut self, mut brightness: u8) -> Result<(), Error> {
-        const MAX_BRIGHTNESS: u8 = 15;
-        if brightness > MAX_BRIGHTNESS {
-            brightness = MAX_BRIGHTNESS;
-        }
+    pub async fn initialize(&mut self) -> Result<(), Error> {
         self.tx
-            .write(HT16K33_BRIGHTNESS_CMD + self.address_offset, &[brightness])
-            .await
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &[HT16K33Commands::Begin as u8],
+            )
+            .await?;
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &[HT16K33Commands::SetBlink as u8 | 1],
+            )
+            .await?;
+
+        let mut empty_segment_command = [0; 17];
+        empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &empty_segment_command,
+            )
+            .await?;
+        Ok(())
     }
 
-    pub async fn set_blinkrate(&mut self, blinkrate: H16K33Blinkrate) -> Result<(), Error> {
-        self.tx.write(HT16K33_BLINK_CMD, &[blinkrate as u8]).await
-    }
-
-    pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), Error> {
-        let mut lhs = float as i64;
-        let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
-        // FIXME: The above u33 to f64 conversion is subject to floating point imprecision
-
-        let mut reserve_digits = DISPLAY_SIZE;
-        let mut buf: [u8; DISPLAY_SIZE] = [0; DISPLAY_SIZE];
-
-        while rhs > 0 {
-            let digit = (rhs % 10) as u8;
-            buf[reserve_digits - 1] = digit_segment_encoding::digit_to_mask(digit);
-            rhs /= 10;
-            reserve_digits -= 1;
-        }
-        if reserve_digits == 1 {
-            buf[reserve_digits] = digit_segment_encoding::ZERO;
-        }
-        buf[reserve_digits] |= digit_segment_encoding::DOT;
-
-        while lhs > 0 {
-            let digit = (lhs % 10) as u8;
-            buf[reserve_digits - 1] = digit_segment_encoding::digit_to_mask(digit);
-            lhs /= 10;
-            reserve_digits -= 1;
-        }
+    pub async fn enable(&mut self, turn_on: bool) -> Result<(), Error> {
+        let mut buf = [0; 1];
+        buf[0] = if turn_on {
+            HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON
+        } else {
+            HT16K33Commands::SetBlink as u8
+        };
 
         self.tx
             .write(HT16K33_BASE_CMD + self.address_offset, &buf)
             .await
     }
 
-    // TODO: Test this
-    pub async fn write_fixed(
-        &mut self,
-        mut decimal: u64,
-        precision: u32,
-        offset: usize,
-    ) -> Result<(), Error> {
-        const BUF_LEN: usize = 20;
-        let mut buf = [0_u8; BUF_LEN];
-
-        let mut idx = BUF_LEN - 1;
-        while decimal > 0 {
-            let digit = (decimal % 10) as u8;
-            buf[idx] = digit;
-            decimal /= 10;
-            idx -= 1;
+    pub async fn set_brightness(&mut self, mut brightness: u8) -> Result<(), Error> {
+        const MAX_BRIGHTNESS: u8 = 0xf;
+        if brightness > MAX_BRIGHTNESS {
+            brightness = MAX_BRIGHTNESS;
         }
-
-        let unpadded_digits = buf
-            .iter()
-            .skip_while(|digit| **digit != 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        let dp = max(unpadded_digits.len(), DISPLAY_SIZE) - 1 - precision as usize;
-        let mut display_buf = [0_u8; DISPLAY_SIZE];
-        for (digit, idx) in unpadded_digits
-            .into_iter()
-            .skip(offset)
-            .take(DISPLAY_SIZE)
-            .rev()
-            .zip((0..DISPLAY_SIZE).rev())
-        {
-            display_buf[idx] = digit_segment_encoding::digit_to_mask(digit);
-        }
-
-        if dp < DISPLAY_SIZE {
-            display_buf[dp] |= digit_segment_encoding::DOT;
-        }
-
         self.tx
-            .write(HT16K33_BASE_CMD + self.address_offset, &display_buf)
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &[HT16K33Commands::SetBrightness as u8 | brightness],
+            )
             .await
     }
+
+    pub async fn set_blinkrate(&mut self, blinkrate: H16K33Blinkrate) -> Result<(), Error> {
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &[HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON | ((blinkrate as u8) << 1)],
+            )
+            .await
+    }
+
+    pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), Error>
+    where
+        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+    {
+        let is_neg = float.is_sign_negative();
+        let mut lhs = float as u64;
+        let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
+        // FIXME: The above u32 to f64 conversion is subject to floating point imprecision
+
+        let mut buf: [u8; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
+
+        for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
+            if rhs == 0 && r_idx < precision as usize {
+                let le = to_little_endian(digit_segment_encoding::ZERO);
+                for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
+                    *chunk_byte = byte;
+                }
+            } else {
+                if rhs == 0 && lhs == 0 {
+                    if r_idx == precision as usize {
+                        let mut encoding = digit_segment_encoding::ZERO;
+                        encoding |= digit_segment_encoding::DOT;
+                        let le = to_little_endian(encoding);
+                        for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
+                            *chunk_byte = byte;
+                        }
+                    }
+                    break;
+                }
+                let n = if rhs > 0 { &mut rhs } else { &mut lhs };
+                let digit = (*n % 10) as u8;
+                let mut encoding = digit_segment_encoding::digit_to_mask(digit);
+                if r_idx == precision as usize {
+                    encoding |= digit_segment_encoding::DOT;
+                }
+                let le = to_little_endian(encoding);
+                for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
+                    *chunk_byte = byte;
+                }
+                *n /= 10;
+            }
+        }
+
+        // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
+        // on construction)
+        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &[lhs, &[0x00, 0x00], rhs].concat(),
+            )
+            .await
+    }
+}
+
+fn to_little_endian(mut n: u16) -> [u8; 2] {
+    let mut buf = [0; 2];
+    buf.iter_mut().for_each(|byte| {
+        *byte = (n & 0xff) as u8;
+        n >>= 8;
+    });
+    buf
 }
