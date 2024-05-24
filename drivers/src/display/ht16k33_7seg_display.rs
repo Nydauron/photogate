@@ -237,7 +237,7 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
 
     for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
         if rhs == 0 && r_idx < precision as usize {
-            let le = to_little_endian(digit_segment_encoding::ZERO);
+            let le = digit_segment_encoding::ZERO.to_le_bytes();
             for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
                 *chunk_byte = byte;
             }
@@ -246,7 +246,7 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
                 if r_idx == precision as usize {
                     let mut encoding = digit_segment_encoding::ZERO;
                     encoding |= digit_segment_encoding::DOT;
-                    let le = to_little_endian(encoding);
+                    let le = encoding.to_le_bytes();
                     for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
                         *chunk_byte = byte;
                     }
@@ -259,7 +259,7 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
             if r_idx == precision as usize {
                 encoding |= digit_segment_encoding::DOT;
             }
-            let le = to_little_endian(encoding);
+            let le = encoding.to_le_bytes();
             for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
                 *chunk_byte = byte;
             }
@@ -269,11 +269,3 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
     buf
 }
 
-fn to_little_endian(mut n: u16) -> [u8; 2] {
-    let mut buf = [0; 2];
-    buf.iter_mut().for_each(|byte| {
-        *byte = (n & 0xff) as u8;
-        n >>= 8;
-    });
-    buf
-}
