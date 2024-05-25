@@ -43,7 +43,6 @@ enum FSMStates {
     Idle = 0,
     Prepare,
     Ready,
-    TimerStart,
     TimerRunning,
     TimerEnd,
 }
@@ -60,18 +59,27 @@ static STATE: Mutex<CriticalSectionRawMutex, FSMStates> = Mutex::new(FSMStates::
 
 const SECS_TO_MILLIS: u32 = 1000;
 
-static DISPLAY_TIMES: Signal<CriticalSectionRawMutex, (Instant, Option<Instant>)> = Signal::new();
+static DISPLAY_COMMAND: Signal<CriticalSectionRawMutex, DisplayCommand> = Signal::new();
 const INPUT_CHANNEL_BUFFER_SIZE: usize = 64;
 static INPUT_CHANNEL: Channel<CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_BUFFER_SIZE> =
     Channel::new();
+static TIMER_SIGNAL: Signal<CriticalSectionRawMutex, TimerSignal> = Signal::new();
+static CANCEL_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 static PHOTOGATE_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 enum InputEvent {
     ButtonDown,
     ButtonUp,
-    PhotodiodeOpen,
-    PhotodiodeClosed,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DisplayCommand {
+    Clear,
+    Zero,
+    Pending,
+    StartTimer(Instant),
+    EndTimer { start: Instant, end: Instant },
 }
 
 // FIXME: Potential bug when using wait_for_low and wait_for_high:
@@ -90,78 +98,159 @@ async fn handle_button(
     }
 }
 
+enum TimerSignal {
+    StartTimer(Instant),
+    EndTimer(Instant, Instant),
+}
 #[embassy_executor::task]
 async fn handle_photodiode(
     photodiode: &'static Photodiode,
-    channel: Sender<'static, CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_BUFFER_SIZE>,
-) -> ! {
-    loop {
-        {
-            photodiode
-                .lock()
-                .await
-                .as_mut()
-                .unwrap()
-                .wait_for_low()
-                .await
-                .unwrap();
-        }
-        channel.send(InputEvent::PhotodiodeClosed).await;
-        {
-            photodiode
-                .lock()
-                .await
-                .as_mut()
-                .unwrap()
-                .wait_for_high()
-                .await
-                .unwrap();
-        }
-        channel.send(InputEvent::PhotodiodeOpen).await;
+    signal_timer: &'static Signal<CriticalSectionRawMutex, TimerSignal>,
+    cancel: &'static Signal<CriticalSectionRawMutex, ()>,
+) {
+    let starttime = {
+        let mut lock = photodiode.lock().await;
+        let photodiode = lock.as_mut().unwrap();
+        let start = match select(pin!(photodiode.wait_for_high()), cancel.wait()).await {
+            Either::Left((_, _)) => {
+                let start = Instant::now();
+                signal_timer.signal(TimerSignal::StartTimer(start));
+                debug!("Start signaled: {}", start);
+                start
+            }
+            Either::Right((_, _)) => {
+                cancel.reset();
+                return;
+            }
+        };
+        start
+    };
+    {
+        let mut lock = photodiode.lock().await;
+        let photodiode = lock.as_mut().unwrap();
+        debug!("Waiting for laser beam to reconnect ...");
+        match select(pin!(photodiode.wait_for_low()), cancel.wait()).await {
+            Either::Left((_, _)) => {}
+            Either::Right((_, _)) => {
+                cancel.reset();
+                return;
+            }
+        };
+    }
+    {
+        let mut lock = photodiode.lock().await;
+        let photodiode = lock.as_mut().unwrap();
+        debug!("Waiting for laser beam to break ...");
+        match select(pin!(photodiode.wait_for_high()), cancel.wait()).await {
+            Either::Left((_, _)) => {
+                let endtime = Instant::now();
+                signal_timer.signal(TimerSignal::EndTimer(starttime, endtime));
+                debug!("Stop signaled: {}", endtime);
+            }
+            Either::Right((_, _)) => {
+                cancel.reset();
+                return;
+            }
+        };
     }
 }
 
 #[embassy_executor::task]
 async fn handle_segment_display(
     mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0>>,
-    times: &'static Signal<CriticalSectionRawMutex, (Instant, Option<Instant>)>,
+    command: &'static Signal<CriticalSectionRawMutex, DisplayCommand>,
 ) -> ! {
+    display.clear_display().await.unwrap();
+    let (mut starttime, mut endtime) = (None, None);
+    // FIX: Ideally, we should try to use a Ticker, but maybe we can make our own that doesn't try
+    // to "catch up"
+    const FAST_UPDATE: Duration = Duration::from_millis(16);
+    const SLOW_UPDATE: Duration = Duration::from_millis(90);
+    let mut update_delay = FAST_UPDATE;
+    let mut pending_ticker = Ticker::every(Duration::from_millis(150));
+    let mut latest_command = None;
+    let mut is_timer_running = false;
+    let mut pending_pos = 0;
     loop {
-        display
-            .set_blinkrate(H16K33Blinkrate::BlinkOff)
-            .await
-            .unwrap();
-        display.write_f64(0_f64, 2).await.unwrap();
-        times.wait().await;
-        let mut ticker = Ticker::every(Duration::from_millis(50));
-        loop {
-            if !times.signaled() {
-                break;
-            }
-            if let Some((start, opt_end)) = times.try_take() {
-                if let Some(end) = opt_end {
-                    let diff = end - start;
+        let input_command = if is_timer_running {
+            command.try_take()
+        } else {
+            Some(command.wait().await)
+        };
+        if let Some(cmd) = input_command {
+            latest_command = Some(cmd);
+            match cmd {
+                DisplayCommand::Clear => {
+                    is_timer_running = false;
+                    (starttime, endtime) = (None, None);
+                    display.clear_display().await.unwrap();
                     display
-                        .set_blinkrate(H16K33Blinkrate::BlinkHalfHz)
+                        .set_blinkrate(H16K33Blinkrate::BlinkOff)
                         .await
                         .unwrap();
-                    // TODO: Change back to write_fixed
-                    display
-                        .write_f64(diff.as_millis() as f64 / 1000_f64, 3)
-                        .await
-                        .unwrap();
-                } else {
-                    let curr = Instant::now();
-                    let diff = curr - start;
-                    let diff_secs = diff.as_millis() as f64 / SECS_TO_MILLIS as f64;
-                    if diff_secs < 10_f64 {
-                        display.write_f64(diff_secs, 2).await.unwrap();
-                    } else {
-                        display.write_f64(diff_secs, 1).await.unwrap();
-                    }
                 }
-            };
-            ticker.next().await;
+                DisplayCommand::Zero => {
+                    is_timer_running = false;
+                    (starttime, endtime) = (None, None);
+                    display.write_f64(0_f64, 2).await.unwrap();
+                    display
+                        .set_blinkrate(H16K33Blinkrate::BlinkOff)
+                        .await
+                        .unwrap();
+                }
+                DisplayCommand::Pending => {
+                    pending_pos = 0;
+                    is_timer_running = true;
+                    pending_ticker.reset();
+                    (starttime, endtime) = (None, None);
+                    display
+                        .set_blinkrate(H16K33Blinkrate::BlinkOff)
+                        .await
+                        .unwrap();
+                }
+                DisplayCommand::StartTimer(start) => {
+                    is_timer_running = true;
+                    update_delay = FAST_UPDATE;
+                    (starttime, endtime) = (Some(start), None);
+                }
+                DisplayCommand::EndTimer { start, end } => {
+                    is_timer_running = false;
+                    (starttime, endtime) = (Some(start), Some(end));
+                }
+            }
+        }
+
+        if let Some(DisplayCommand::Pending) = latest_command {
+            display.write_raw(&[0x01 << pending_pos; 4]).await.unwrap();
+            pending_pos = (pending_pos + 1) % 6;
+            pending_ticker.next().await;
+        }
+        match (starttime, endtime) {
+            (Some(start), None) => {
+                let curr = Instant::now();
+                let diff = curr - start;
+                let diff_secs = diff.as_millis() as f64 / SECS_TO_MILLIS as f64;
+                if diff_secs < 100_f64 {
+                    display.write_f64(diff_secs, 2).await.unwrap();
+                } else {
+                    update_delay = SLOW_UPDATE;
+                    display.write_f64(diff_secs, 1).await.unwrap();
+                }
+                Timer::after(update_delay).await;
+            }
+            (Some(start), Some(end)) => {
+                let diff = end - start;
+                display
+                    .set_blinkrate(H16K33Blinkrate::BlinkHalfHz)
+                    .await
+                    .unwrap();
+                // TODO: Change back to write_fixed
+                display
+                    .write_f64(diff.as_millis() as f64 / 1000_f64, 2)
+                    .await
+                    .unwrap();
+            }
+            _ => {}
         }
     }
 }
@@ -171,11 +260,17 @@ async fn check_laser_is_aligned(
     photodiode: &'static Photodiode,
     is_ready: &'static Signal<CriticalSectionRawMutex, ()>,
 ) {
+    const HOLD_TIME_MSECS: u64 = 3000;
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
         let mut lock = photodiode.lock().await;
         let photodiode = lock.as_mut().unwrap();
-        match select(Timer::after_millis(3000), pin!(photodiode.wait_for_low())).await {
+        match select(
+            Timer::after_millis(HOLD_TIME_MSECS),
+            pin!(photodiode.wait_for_high()),
+        )
+        .await
+        {
             Either::Left((_, _)) => {
                 is_ready.signal(());
                 return;
@@ -183,6 +278,7 @@ async fn check_laser_is_aligned(
             Either::Right((_, _)) => {
                 info!("Beam was broken prematurely");
                 ticker.next().await;
+                ticker.reset();
             }
         };
     }
@@ -212,10 +308,14 @@ async fn main(spawner: Spawner) {
         peripherals.I2C0,
         io.pins.gpio1,
         io.pins.gpio2,
-        100_u32.kHz(),
+        // 100_u32.kHz(),
+        1_u32.MHz(),
         &clocks,
     );
     let mut display = AsyncI2C7SegDisplay::<DISPLAY_LENGTH, _>::new(0, i2c);
+
+    display.initialize().await.unwrap();
+    display.set_brightness(15).await.unwrap();
 
     esp_hal::interrupt::enable(
         esp_hal::peripherals::Interrupt::GPIO,
@@ -224,14 +324,12 @@ async fn main(spawner: Spawner) {
     .unwrap();
 
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
-    spawner.must_spawn(handle_photodiode(&PHOTODIODE_INPUT, INPUT_CHANNEL.sender()));
-    spawner.must_spawn(handle_segment_display(display, &DISPLAY_TIMES));
+    spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     let mut start_time = None;
     let mut end_time = None;
 
     let mut ticker = Ticker::every(Duration::from_millis(1));
 
-    let mut photogate_is_closed = false;
     let mut button_is_down = false;
     loop {
         // Use embassy_sync::channel::Channel and have here receive messages from input tasks
@@ -257,12 +355,6 @@ async fn main(spawner: Spawner) {
                 InputEvent::ButtonUp => {
                     button_is_down = false;
                 }
-                InputEvent::PhotodiodeClosed => {
-                    photogate_is_closed = true;
-                }
-                InputEvent::PhotodiodeOpen => {
-                    photogate_is_closed = false;
-                }
             }
         }
 
@@ -272,10 +364,12 @@ async fn main(spawner: Spawner) {
                 // Wait for button press
                 if button_is_down {
                     // If press, go to Prepare
+                    PHOTOGATE_READY.reset();
                     match spawner.spawn(check_laser_is_aligned(&PHOTODIODE_INPUT, &PHOTOGATE_READY))
                     {
                         Ok(_) => {
                             *(STATE.lock().await.deref_mut()) = FSMStates::Prepare;
+                            DISPLAY_COMMAND.signal(DisplayCommand::Pending);
                             info!("Preparing photogate for timing ...");
                             info!("Hold still ...");
                         }
@@ -291,34 +385,44 @@ async fn main(spawner: Spawner) {
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
                 if PHOTOGATE_READY.signaled() {
-                    info!("Photogate is ready!");
-                    PHOTOGATE_READY.reset();
-                    *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
+                    TIMER_SIGNAL.reset();
+                    CANCEL_SIGNAL.reset();
+                    match spawner.spawn(handle_photodiode(
+                        &PHOTODIODE_INPUT,
+                        &TIMER_SIGNAL,
+                        &CANCEL_SIGNAL,
+                    )) {
+                        Ok(_) => {
+                            *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
+                            PHOTOGATE_READY.reset();
+                            DISPLAY_COMMAND.signal(DisplayCommand::Zero);
+                            info!("Photogate is ready!");
+                        }
+                        Err(e) => error!(
+                            "Error occurred when trying to spawn photodiode task: {:?}",
+                            e
+                        ),
+                    }
                 }
             }
-            FSMStates::Ready => {
-                if !photogate_is_closed {
-                    start_time = Some(Instant::now());
-                    info!("Photogate beam was broken. Timer started");
-
-                    DISPLAY_TIMES.signal((start_time.unwrap(), None));
-                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerStart;
+            FSMStates::Ready | FSMStates::TimerRunning => {
+                if button_is_down {
+                    CANCEL_SIGNAL.signal(());
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
                 }
-            }
-            FSMStates::TimerStart => {
-                if photogate_is_closed {
-                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerRunning;
-                }
-            }
-            FSMStates::TimerRunning => {
-                // Update segment display
-
-                if !photogate_is_closed {
-                    end_time = Some(Instant::now());
-                    info!("Photogate beam was broken. Timer end");
-                    if let Some(start_time) = start_time {
-                        DISPLAY_TIMES.signal((start_time, end_time));
-                        *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd;
+                if let Some(timer_event) = TIMER_SIGNAL.try_take() {
+                    match timer_event {
+                        TimerSignal::StartTimer(start) => {
+                            info!("Photogate beam was broken. Timer started");
+                            DISPLAY_COMMAND.signal(DisplayCommand::StartTimer(start));
+                            *(STATE.lock().await.deref_mut()) = FSMStates::TimerRunning;
+                        }
+                        TimerSignal::EndTimer(start, end) => {
+                            (start_time, end_time) = (Some(start), Some(end));
+                            info!("Photogate beam was broken. Timer ended");
+                            DISPLAY_COMMAND.signal(DisplayCommand::EndTimer { start, end });
+                            *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd;
+                        }
                     }
                 }
             }
