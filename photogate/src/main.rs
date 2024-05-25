@@ -58,6 +58,7 @@ const DISPLAY_LENGTH: usize = 4;
 static STATE: Mutex<CriticalSectionRawMutex, FSMStates> = Mutex::new(FSMStates::Idle);
 
 const SECS_TO_MILLIS: u32 = 1000;
+const SECS_TO_MICROS: u32 = 1_000_000;
 
 static DISPLAY_COMMAND: Signal<CriticalSectionRawMutex, DisplayCommand> = Signal::new();
 const INPUT_CHANNEL_BUFFER_SIZE: usize = 64;
@@ -433,7 +434,7 @@ async fn main(spawner: Spawner) {
                     let duration = end.duration_since(start);
                     info!(
                         "Time: {}",
-                        (duration.as_millis() as f64) / (SECS_TO_MILLIS as f64)
+                        (duration.as_micros() as f64) / (SECS_TO_MICROS as f64)
                     );
                     start_time = None;
                     end_time = None;
