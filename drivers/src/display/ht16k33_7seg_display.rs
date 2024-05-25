@@ -4,7 +4,7 @@
 //!
 //! The module contains two types of variants, and syncrhonous driver and an asynchronous driver.
 
-use alloc::vec;
+use alloc::vec::Vec;
 use core::usize;
 
 use embedded_hal::i2c::I2c as SyncI2c;
@@ -124,6 +124,25 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    pub fn write_raw(&mut self, digits: &[u16]) -> Result<(), T::Error> {
+        let buf = [HT16K33Commands::SetSegments as u8]
+            .into_iter()
+            .chain(
+                digits
+                    .into_iter()
+                    .map(|d| d.to_le_bytes())
+                    .collect::<Vec<_>>()
+                    .concat()
+                    .into_iter(),
+            )
+            .collect::<Vec<_>>();
+        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
+        self.tx.write(
+            HT16K33_BASE_CMD + self.address_offset,
+            add_midpoint_colon_segment(&buf, false).as_slice(),
+        )
+    }
+
     pub fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
@@ -132,10 +151,9 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
 
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
-        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
-            vec![lhs, &[0x00, 0x00], rhs].concat().as_slice(),
+            add_midpoint_colon_segment(&buf, false).as_slice(),
         )
     }
 }
@@ -215,6 +233,27 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    pub async fn write_raw(&mut self, digits: &[u16]) -> Result<(), T::Error> {
+        let buf = [HT16K33Commands::SetSegments as u8]
+            .into_iter()
+            .chain(
+                digits
+                    .into_iter()
+                    .map(|d| d.to_le_bytes())
+                    .collect::<Vec<_>>()
+                    .concat()
+                    .into_iter(),
+            )
+            .collect::<Vec<_>>();
+        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                add_midpoint_colon_segment(&buf, false).as_slice(),
+            )
+            .await
+    }
+
     pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
@@ -223,14 +262,25 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
-        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
         self.tx
             .write(
                 HT16K33_BASE_CMD + self.address_offset,
-                vec![lhs, &[0x00, 0x00], rhs].concat().as_slice(),
+                add_midpoint_colon_segment(&buf, false).as_slice(),
             )
             .await
     }
+
+fn add_midpoint_colon_segment<const N: usize>(
+    buf: &[u8; N * 2 + 1],
+    enable_colon: bool,
+) -> Vec<u8> {
+    let (lhs, rhs) = buf.split_at(N + 1);
+    let colon_segments = if enable_colon {
+        &[0x02, 0x00]
+    } else {
+        &[0x00; 2]
+    };
+    [lhs, colon_segments, rhs].concat()
 }
 
 fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N] {
