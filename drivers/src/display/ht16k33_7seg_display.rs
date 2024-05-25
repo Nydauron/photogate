@@ -82,13 +82,7 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
             HT16K33_BASE_CMD + self.address_offset,
             &[HT16K33Commands::SetBlink as u8 | 1],
         )?;
-
-        let mut empty_segment_command = [0; 17];
-        empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
-        self.tx.write(
-            HT16K33_BASE_CMD + self.address_offset,
-            &empty_segment_command,
-        )?;
+        self.clear_display()?;
         Ok(())
     }
 
@@ -101,6 +95,15 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         };
 
         self.tx.write(HT16K33_BASE_CMD + self.address_offset, &buf)
+    }
+
+    pub fn clear_display(&mut self) -> Result<(), T::Error> {
+        let mut empty_segment_command = [0; 17];
+        empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
+        self.tx.write(
+            HT16K33_BASE_CMD + self.address_offset,
+            &empty_segment_command,
+        )
     }
 
     pub fn set_brightness(&mut self, mut brightness: u8) -> Result<(), T::Error> {
@@ -162,15 +165,7 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
                 &[HT16K33Commands::SetBlink as u8 | 1],
             )
             .await?;
-
-        let mut empty_segment_command = [0; 17];
-        empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
-        self.tx
-            .write(
-                HT16K33_BASE_CMD + self.address_offset,
-                &empty_segment_command,
-            )
-            .await?;
+        self.clear_display().await?;
         Ok(())
     }
 
@@ -184,6 +179,17 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
         self.tx
             .write(HT16K33_BASE_CMD + self.address_offset, &buf)
+            .await
+    }
+
+    pub async fn clear_display(&mut self) -> Result<(), T::Error> {
+        let mut empty_segment_command = [0; 17];
+        empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                &empty_segment_command,
+            )
             .await
     }
 
