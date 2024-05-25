@@ -124,19 +124,11 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
-    pub fn write_raw(&mut self, digits: &[u16]) -> Result<(), T::Error> {
-        let buf = [HT16K33Commands::SetSegments as u8]
-            .into_iter()
-            .chain(
-                digits
-                    .into_iter()
-                    .map(|d| d.to_le_bytes())
-                    .collect::<Vec<_>>()
-                    .concat()
-                    .into_iter(),
-            )
-            .collect::<Vec<_>>();
-        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
+    pub fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
+    where
+        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+    {
+        let buf = raw_segment_mask_to_buf(digits);
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
             add_midpoint_colon_segment(&buf, false).as_slice(),
@@ -233,19 +225,11 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
-    pub async fn write_raw(&mut self, digits: &[u16]) -> Result<(), T::Error> {
-        let buf = [HT16K33Commands::SetSegments as u8]
-            .into_iter()
-            .chain(
-                digits
-                    .into_iter()
-                    .map(|d| d.to_le_bytes())
-                    .collect::<Vec<_>>()
-                    .concat()
-                    .into_iter(),
-            )
-            .collect::<Vec<_>>();
-        let (lhs, rhs) = buf.split_at(DISPLAY_SIZE + 1);
+    pub async fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
+    where
+        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+    {
+        let buf = raw_segment_mask_to_buf(digits);
         self.tx
             .write(
                 HT16K33_BASE_CMD + self.address_offset,
@@ -269,6 +253,28 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             )
             .await
     }
+
+}
+
+fn raw_segment_mask_to_buf<const N: usize>(segment_masks: &[u16; N]) -> [u8; N * 2 + 1]
+where
+    [(); N * 2 + 1]: Sized,
+{
+    let mut buf = [0; N * 2 + 1];
+    for (byte, segment_bits) in buf.iter_mut().zip(
+        [HT16K33Commands::SetSegments as u8].into_iter().chain(
+            segment_masks
+                .into_iter()
+                .map(|d| d.to_le_bytes())
+                .collect::<Vec<_>>()
+                .concat()
+                .into_iter(),
+        ),
+    ) {
+        *byte = segment_bits;
+    }
+    buf
+}
 
 fn add_midpoint_colon_segment<const N: usize>(
     buf: &[u8; N * 2 + 1],
