@@ -20,6 +20,7 @@ use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio9, PullDown};
 use esp_hal::i2c;
 use esp_hal::peripherals::I2C0;
+use esp_hal::systimer::SystemTimer;
 use esp_hal::{
     clock::ClockControl,
     embassy,
@@ -197,13 +198,10 @@ async fn main(spawner: Spawner) {
     }
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
+    let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let clocks = ClockControl::max(system.clock_control).freeze();
-
-    embassy::init(
-        &clocks,
-        esp_hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks),
-    );
+    let systimer = SystemTimer::new(peripherals.SYSTIMER);
+    embassy::init(&clocks, systimer);
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let photodiode = io.pins.gpio0.into_pull_down_input();
