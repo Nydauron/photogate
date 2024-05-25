@@ -6,6 +6,7 @@ extern crate alloc;
 
 use core::ops::{Deref, DerefMut};
 use core::pin::pin;
+use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -27,7 +28,7 @@ use esp_hal::{
     prelude::*,
     IO,
 };
-use esp_println::println;
+use esp_println as _;
 use futures::future::{select, Either};
 use strum::EnumCount;
 
@@ -179,7 +180,7 @@ async fn check_laser_is_aligned(
                 return;
             }
             Either::Right((_, _)) => {
-                println!("Beam was broken prematurely");
+                info!("Beam was broken prematurely");
                 ticker.next().await;
             }
         };
@@ -293,10 +294,13 @@ async fn main(spawner: Spawner) {
                     {
                         Ok(_) => {
                             *(STATE.lock().await.deref_mut()) = FSMStates::Prepare;
-                            println!("Preparing photogate for timing ...");
-                            println!("Hold still ...");
+                            info!("Preparing photogate for timing ...");
+                            info!("Hold still ...");
                         }
-                        Err(e) => println!("Error occurred {:?}", e),
+                        Err(e) => error!(
+                            "Error occurred when trying to spawn photodiode preparation task {:?}",
+                            e
+                        ),
                     }
                 }
             }
@@ -305,7 +309,7 @@ async fn main(spawner: Spawner) {
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
                 if PHOTOGATE_READY.signaled() {
-                    println!("Photogate is ready!");
+                    info!("Photogate is ready!");
                     PHOTOGATE_READY.reset();
                     *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
                 }
@@ -313,7 +317,7 @@ async fn main(spawner: Spawner) {
             FSMStates::Ready => {
                 if !photogate_is_closed {
                     start_time = Some(Instant::now());
-                    println!("Photogate beam was broken. Timer started");
+                    info!("Photogate beam was broken. Timer started");
 
                     DISPLAY_TIMES.signal((start_time.unwrap(), None));
                     *(STATE.lock().await.deref_mut()) = FSMStates::TimerStart;
@@ -329,7 +333,7 @@ async fn main(spawner: Spawner) {
 
                 if !photogate_is_closed {
                     end_time = Some(Instant::now());
-                    println!("Photogate beam was broken. Timer ended");
+                    info!("Photogate beam was broken. Timer end");
                     if let Some(start_time) = start_time {
                         DISPLAY_TIMES.signal((start_time, end_time));
                         *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd;
@@ -341,14 +345,14 @@ async fn main(spawner: Spawner) {
 
                 if let (Some(start), Some(end)) = (start_time, end_time) {
                     let duration = end.duration_since(start);
-                    println!(
+                    info!(
                         "Time: {}",
                         (duration.as_millis() as f64) / (SECS_TO_MILLIS as f64)
                     );
                     start_time = None;
                     end_time = None;
                 } else {
-                    println!("Time was not able to be calculated!");
+                    warn!("Time was not able to be calculated!");
                 }
                 *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
             }
