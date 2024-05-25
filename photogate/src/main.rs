@@ -225,23 +225,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_photodiode(&PHOTODIODE_INPUT, INPUT_CHANNEL.sender()));
-    let mut tick = Ticker::every(Duration::from_millis(10));
-    let s = Instant::now();
-    display.initialize().await.unwrap();
-    display.set_brightness(15).await.unwrap();
-    loop {
-        let duration = Instant::now() - s;
-        let precision = if duration.as_millis() >= 100_000 {
-            1
-        } else {
-            2
-        };
-        display
-            .write_f64((duration.as_millis() as f64) / 1000_f64, precision)
-            .await
-            .unwrap();
-        tick.next().await;
-    }
+    spawner.must_spawn(handle_segment_display(display, &DISPLAY_TIMES));
     let mut start_time = None;
     let mut end_time = None;
 
