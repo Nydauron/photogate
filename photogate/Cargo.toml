@@ -25,16 +25,6 @@ strum = { version = "0.26.2", features = ["derive"], default-features = false }
 drivers = { path = "../drivers" }
 defmt = "0.3.8"
 
-[profile.dev]
-# Rust debug is too slow.
-# For debug builds always builds with some optimization
-opt-level = "s"
-
-[profile.release]
-codegen-units = 1 # LLVM can perform better optimizations using a single thread
-debug = 2
-debug-assertions = false
-incremental = false
-lto = 'fat'
-opt-level = 's'
-overflow-checks = false
+[[bin]]
+name = "photogate-node"
+test = false
