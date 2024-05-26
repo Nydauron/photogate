@@ -147,6 +147,18 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
             add_midpoint_colon_segment(&buf, false).as_slice(),
         )
     }
+
+    pub fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
+    where
+        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+    {
+        let buf: [_; DISPLAY_SIZE * 2 + 1] = unsigned_to_segment_buffer(fixed, precision);
+
+        self.tx.write(
+            HT16K33_BASE_CMD + self.address_offset,
+            add_midpoint_colon_segment(&buf, false).as_slice(),
+        )
+    }
 }
 
 /// An asyncrhonous driver for the HT16K33 driving a 7-segment display. Can be used with any I2C
@@ -245,6 +257,20 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
+        self.tx
+            .write(
+                HT16K33_BASE_CMD + self.address_offset,
+                add_midpoint_colon_segment(&buf, false).as_slice(),
+            )
+            .await
+    }
+
+    pub async fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
+    where
+        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+    {
+        let buf: [_; DISPLAY_SIZE * 2 + 1] = unsigned_to_segment_buffer(fixed, precision);
+
         self.tx
             .write(
                 HT16K33_BASE_CMD + self.address_offset,
@@ -363,6 +389,121 @@ fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn basic_fixed_to_segment_buffer() {
+        let f = 3800;
+        let precision = 2;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::THREE & 0xff) as u8,
+            (digit_segment_encoding::THREE >> 8) as u8,
+            (digit_segment_encoding::EIGHT & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::EIGHT >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn leading_zero_fixed_to_segment_buffer() {
+        let f = 73;
+        let precision = 3;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::SEVEN & 0xff) as u8,
+            (digit_segment_encoding::SEVEN >> 8) as u8,
+            (digit_segment_encoding::THREE & 0xff) as u8,
+            (digit_segment_encoding::THREE >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn zeroed_fixed_to_segment_buffer() {
+        let f = 0;
+        let precision = 3;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+    #[test]
+    fn right_aligned_fixed_to_segment_buffer() {
+        let f = 95;
+        let precision = 2;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            0x0,
+            0x0,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::NINE & 0xff) as u8,
+            (digit_segment_encoding::NINE >> 8) as u8,
+            (digit_segment_encoding::FIVE & 0xff) as u8,
+            (digit_segment_encoding::FIVE >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
+    fn precise_fixed_to_segment_buffer() {
+        // Test here to show the difference in fixed point and floating point
+        let f = 1020;
+        let precision = 2;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
+        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        let expected_buf = [
+            HT16K33Commands::SetSegments as u8,
+            (digit_segment_encoding::ONE & 0xff) as u8,
+            (digit_segment_encoding::ONE >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::TWO & 0xff) as u8,
+            (digit_segment_encoding::TWO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
 
     #[test]
     fn basic_float_to_segment_buffer() {
