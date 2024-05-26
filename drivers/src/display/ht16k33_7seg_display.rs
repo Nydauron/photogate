@@ -137,8 +137,12 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
     pub fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * 2 - 1]: Sized,
     {
-        let buf: [u8; DISPLAY_SIZE * 2 + 1] = float_to_segment_buffer(float, precision);
+        let mut buf = [0; DISPLAY_SIZE * 2 + 1];
+        buf[0] = HT16K33Commands::SetSegments as u8;
+        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        inplace_float_to_segment_buffer(segment_buf, float, precision);
 
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
@@ -152,7 +156,10 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
     {
-        let buf: [_; DISPLAY_SIZE * 2 + 1] = unsigned_to_segment_buffer(fixed, precision);
+        let mut buf = [0; DISPLAY_SIZE * 2 + 1];
+        buf[0] = HT16K33Commands::SetSegments as u8;
+        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        inplace_unsigned_to_segment_buffer(segment_buf, fixed, precision);
 
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
@@ -252,9 +259,12 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
     pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * 2 - 1]: Sized,
     {
-        let buf: [u8; DISPLAY_SIZE * 2 + 1] = float_to_segment_buffer(float, precision);
-
+        let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
+        buf[0] = HT16K33Commands::SetSegments as u8;
+        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        inplace_float_to_segment_buffer(segment_buf, float, precision);
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
         self.tx
@@ -269,7 +279,10 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
     {
-        let buf: [_; DISPLAY_SIZE * 2 + 1] = unsigned_to_segment_buffer(fixed, precision);
+        let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
+        buf[0] = HT16K33Commands::SetSegments as u8;
+        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        inplace_unsigned_to_segment_buffer(segment_buf, fixed, precision);
 
         self.tx
             .write(
@@ -313,10 +326,11 @@ fn add_midpoint_colon_segment<const N: usize>(
     [lhs, colon_segments, rhs].concat()
 }
 
-fn unsigned_to_segment_buffer<const N: usize>(mut fixed: u64, precision: u32) -> [u8; N] {
-    let mut buf: [u8; N] = [0; N];
-    buf[0] = HT16K33Commands::SetSegments as u8;
-
+fn inplace_unsigned_to_segment_buffer<const N: usize>(
+    buf: &mut [u8; N],
+    mut fixed: u64,
+    precision: u32,
+) -> &mut [u8; N] {
     for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
         if fixed == 0 && r_idx >= precision as usize {
             if r_idx == precision as usize {
@@ -344,45 +358,30 @@ fn unsigned_to_segment_buffer<const N: usize>(mut fixed: u64, precision: u32) ->
     buf
 }
 
-fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N] {
-    let mut lhs = float as u64;
-    let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
-    // FIXME: The above u32 to f64 conversion is subject to floating point imprecision
+fn inplace_float_to_segment_buffer<const N: usize>(
+    buf: &mut [u8; N],
+    float: f64,
+    precision: u32,
+) -> &mut [u8; N]
+where
+    [(); N - 1]: Sized,
+{
+    let is_neg = float.is_sign_negative();
+    let base = 10_u64;
+    let digits_to_show = (float * (base.pow(precision) as f64)) as u64;
+    let max_number = base.pow(N as u32);
 
-    let mut buf: [u8; N] = [0; N];
-    buf[0] = HT16K33Commands::SetSegments as u8;
-
-    for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
-        if rhs == 0 && r_idx < precision as usize {
-            let le = digit_segment_encoding::ZERO.to_le_bytes();
-            for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
-                *chunk_byte = byte;
-            }
-        } else {
-            if rhs == 0 && lhs == 0 {
-                if r_idx == precision as usize {
-                    let mut encoding = digit_segment_encoding::ZERO;
-                    encoding |= digit_segment_encoding::DOT;
-                    let le = encoding.to_le_bytes();
-                    for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
-                        *chunk_byte = byte;
-                    }
-                }
-                break;
-            }
-            let n = if rhs > 0 { &mut rhs } else { &mut lhs };
-            let digit = (*n % 10) as u8;
-            let mut encoding = digit_segment_encoding::digit_to_mask(digit);
-            if r_idx == precision as usize {
-                encoding |= digit_segment_encoding::DOT;
-            }
-            let le = encoding.to_le_bytes();
-            for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
-                *chunk_byte = byte;
-            }
-            *n /= 10;
-        }
+    if max_number <= digits_to_show {
+        todo!();
     }
+
+    if is_neg {
+        let digits: &mut [_; N - 1] = buf.last_chunk_mut().unwrap();
+        inplace_unsigned_to_segment_buffer(digits, digits_to_show, precision);
+    } else {
+        inplace_unsigned_to_segment_buffer(buf, digits_to_show, precision);
+    }
+
     buf
 }
 
@@ -395,10 +394,10 @@ mod tests {
         let f = 3800;
         let precision = 2;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::THREE & 0xff) as u8,
             (digit_segment_encoding::THREE >> 8) as u8,
             (digit_segment_encoding::EIGHT & 0xff) as u8
@@ -418,10 +417,10 @@ mod tests {
         let f = 73;
         let precision = 3;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8
                 | (digit_segment_encoding::DOT & 0xff) as u8,
             (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
@@ -437,14 +436,37 @@ mod tests {
     }
 
     #[test]
+    fn tiny_fixed_to_segment_buffer() {
+        let f = 6;
+        let precision = 3;
+        const DISPLAY_SIZE: usize = 4;
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
+        let expected_buf = [
+            (digit_segment_encoding::ZERO & 0xff) as u8
+                | (digit_segment_encoding::DOT & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::ZERO & 0xff) as u8,
+            (digit_segment_encoding::ZERO >> 8) as u8,
+            (digit_segment_encoding::SIX & 0xff) as u8,
+            (digit_segment_encoding::SIX >> 8) as u8,
+        ];
+
+        assert_eq!(buf, expected_buf);
+    }
+
+    #[test]
     fn zeroed_fixed_to_segment_buffer() {
         let f = 0;
         let precision = 3;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8
                 | (digit_segment_encoding::DOT & 0xff) as u8,
             (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
@@ -463,10 +485,10 @@ mod tests {
         let f = 95;
         let precision = 2;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             0x0,
             0x0,
             (digit_segment_encoding::ZERO & 0xff) as u8
@@ -487,10 +509,10 @@ mod tests {
         let f = 1020;
         let precision = 2;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = unsigned_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_unsigned_to_segment_buffer(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::ONE & 0xff) as u8,
             (digit_segment_encoding::ONE >> 8) as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8
@@ -510,10 +532,10 @@ mod tests {
         let f = 27.0;
         let precision = 2;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_float_to_segment_buffer::<BUF_SIZE>(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::TWO & 0xff) as u8,
             (digit_segment_encoding::TWO >> 8) as u8,
             (digit_segment_encoding::SEVEN & 0xff) as u8
@@ -533,10 +555,10 @@ mod tests {
         let f = 0.25;
         let precision = 3;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_float_to_segment_buffer::<BUF_SIZE>(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8
                 | (digit_segment_encoding::DOT & 0xff) as u8,
             (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
@@ -556,10 +578,10 @@ mod tests {
         let f = 60.5;
         let precision = 1;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_float_to_segment_buffer::<BUF_SIZE>(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             0x0,
             0x0,
             (digit_segment_encoding::SIX & 0xff) as u8,
@@ -576,20 +598,20 @@ mod tests {
 
     #[test]
     fn precise_float_to_segment_buffer() {
-        let f = 10.2;
+        let f = 10.3;
         let precision = 2;
         const DISPLAY_SIZE: usize = 4;
-        const BUF_SIZE: usize = DISPLAY_SIZE * 2 + 1;
-        let buf = float_to_segment_buffer::<BUF_SIZE>(f, precision);
+        const BUF_SIZE: usize = DISPLAY_SIZE * 2;
+        let mut buf = [0; BUF_SIZE];
+        inplace_float_to_segment_buffer::<BUF_SIZE>(&mut buf, f, precision);
         let expected_buf = [
-            HT16K33Commands::SetSegments as u8,
             (digit_segment_encoding::ONE & 0xff) as u8,
             (digit_segment_encoding::ONE >> 8) as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8
                 | (digit_segment_encoding::DOT & 0xff) as u8,
             (digit_segment_encoding::ZERO >> 8) as u8 | (digit_segment_encoding::DOT >> 8) as u8,
-            (digit_segment_encoding::TWO & 0xff) as u8,
-            (digit_segment_encoding::TWO >> 8) as u8,
+            (digit_segment_encoding::THREE & 0xff) as u8,
+            (digit_segment_encoding::THREE >> 8) as u8,
             (digit_segment_encoding::ZERO & 0xff) as u8,
             (digit_segment_encoding::ZERO >> 8) as u8,
         ];
