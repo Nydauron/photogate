@@ -287,12 +287,44 @@ fn add_midpoint_colon_segment<const N: usize>(
     [lhs, colon_segments, rhs].concat()
 }
 
+fn unsigned_to_segment_buffer<const N: usize>(mut fixed: u64, precision: u32) -> [u8; N] {
+    let mut buf: [u8; N] = [0; N];
+    buf[0] = HT16K33Commands::SetSegments as u8;
+
+    for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
+        if fixed == 0 && r_idx >= precision as usize {
+            if r_idx == precision as usize {
+                let encoding = digit_segment_encoding::ZERO | digit_segment_encoding::DOT;
+                let le = encoding.to_le_bytes();
+                for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
+                    *chunk_byte = byte;
+                }
+            }
+            break;
+        }
+        let digit = (fixed % 10) as u8;
+        fixed /= 10;
+        let mut encoding = digit_segment_encoding::digit_to_mask(digit);
+        if r_idx == precision as usize {
+            encoding |= digit_segment_encoding::DOT;
+        }
+
+        let le = encoding.to_le_bytes();
+        for (chunk_byte, byte) in chunk.iter_mut().zip(le) {
+            *chunk_byte = byte;
+        }
+    }
+
+    buf
+}
+
 fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N] {
     let mut lhs = float as u64;
     let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
     // FIXME: The above u32 to f64 conversion is subject to floating point imprecision
 
     let mut buf: [u8; N] = [0; N];
+    buf[0] = HT16K33Commands::SetSegments as u8;
 
     for (r_idx, chunk) in buf.rchunks_exact_mut(2).enumerate() {
         if rhs == 0 && r_idx < precision as usize {
