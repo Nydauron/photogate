@@ -10,6 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  TARGET: riscv32imc-unknown-none-elf
 
 jobs:
   rust-checks:
@@ -24,7 +25,12 @@ jobs:
           - command: fmt
             args: --all -- --check --color always
           - command: clippy
-            args: --all-targets --all-features --workspace -- -D warnings
+            args: --all-features -- -D warnings
+          - command: test
+            args: ""
+        package:
+          - ./drivers/
+          - ./photogate/
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,8 +38,10 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
+          targets: ${{ env.TARGET }}, x86_64-unknown-linux-gnu
           components: rust-src, rustfmt, clippy
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
-      - name: Run command
+      - name: Run cargo checks
+        working-directory: ${{ matrix.package }}
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
