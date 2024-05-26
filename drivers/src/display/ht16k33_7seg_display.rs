@@ -5,7 +5,6 @@
 //! The module contains two types of variants, and syncrhonous driver and an asynchronous driver.
 
 use alloc::vec::Vec;
-use core::usize;
 
 use embedded_hal::i2c::I2c as SyncI2c;
 use embedded_hal_async::i2c::I2c as AsyncI2c;
@@ -253,7 +252,6 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             )
             .await
     }
-
 }
 
 fn raw_segment_mask_to_buf<const N: usize>(segment_masks: &[u16; N]) -> [u8; N * 2 + 1]
@@ -264,7 +262,7 @@ where
     for (byte, segment_bits) in buf.iter_mut().zip(
         [HT16K33Commands::SetSegments as u8].into_iter().chain(
             segment_masks
-                .into_iter()
+                .iter()
                 .map(|d| d.to_le_bytes())
                 .collect::<Vec<_>>()
                 .concat()
@@ -290,7 +288,6 @@ fn add_midpoint_colon_segment<const N: usize>(
 }
 
 fn float_to_segment_buffer<const N: usize>(float: f64, precision: u32) -> [u8; N] {
-    let is_neg = float.is_sign_negative();
     let mut lhs = float as u64;
     let mut rhs = ((float - lhs as f64) * (10_u32.pow(precision) as f64)) as u64;
     // FIXME: The above u32 to f64 conversion is subject to floating point imprecision

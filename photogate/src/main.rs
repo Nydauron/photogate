@@ -76,11 +76,15 @@ enum InputEvent {
 
 #[derive(Debug, Clone, Copy)]
 enum DisplayCommand {
+    #[allow(dead_code)]
     Clear,
     Zero,
     Pending,
     StartTimer(Instant),
-    EndTimer { start: Instant, end: Instant },
+    EndTimer {
+        start: Instant,
+        end: Instant,
+    },
 }
 
 // FIXME: Potential bug when using wait_for_low and wait_for_high:
@@ -112,6 +116,7 @@ async fn handle_photodiode(
     let starttime = {
         let mut lock = photodiode.lock().await;
         let photodiode = lock.as_mut().unwrap();
+        #[allow(clippy::let_and_return)]
         let start = match select(pin!(photodiode.wait_for_high()), cancel.wait()).await {
             Either::Left((_, _)) => {
                 let start = Instant::now();
@@ -150,7 +155,6 @@ async fn handle_photodiode(
             }
             Either::Right((_, _)) => {
                 cancel.reset();
-                return;
             }
         };
     }
