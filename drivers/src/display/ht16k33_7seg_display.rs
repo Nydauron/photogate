@@ -366,9 +366,10 @@ fn inplace_float_to_segment_buffer<const N: usize>(
 where
     [(); N - 1]: Sized,
 {
+    // FIX: Look into dragon4 and grisu3 algorithms
     let is_neg = float.is_sign_negative();
     let base = 10_u64;
-    let digits_to_show = (float * (base.pow(precision) as f64)) as u64;
+    let digits_to_show = ((float * (base.pow(precision) as f64)) + 0.5) as u64;
     let max_number = base.pow(N as u32);
 
     if max_number <= digits_to_show {
