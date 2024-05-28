@@ -302,10 +302,7 @@ where
         [HT16K33Commands::SetSegments as u8].into_iter().chain(
             segment_masks
                 .iter()
-                .map(|d| d.to_le_bytes())
-                .collect::<Vec<_>>()
-                .concat()
-                .into_iter(),
+                .flat_map(|d| d.to_le_bytes().into_iter()),
         ),
     ) {
         *byte = segment_bits;
