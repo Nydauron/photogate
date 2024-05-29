@@ -54,6 +54,8 @@ pub enum H16K33Blinkrate {
 const HT16K33_BASE_CMD: u8 = 0x70;
 const HT16K33_DISPLAY_ON: u8 = 0x01;
 
+const SIZE_OF_U16: usize = size_of::<u16>();
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 enum HT16K33Commands {
@@ -128,7 +130,7 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
 
     pub fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
     {
         let buf = raw_segment_mask_to_buf(digits);
         self.tx.write(
@@ -139,12 +141,12 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
 
     pub fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
-        [(); DISPLAY_SIZE * 2 - 2]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 - SIZE_OF_U16]: Sized,
     {
-        let mut buf = [0; DISPLAY_SIZE * 2 + 1];
+        let mut buf = [0; DISPLAY_SIZE * SIZE_OF_U16 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
-        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        let segment_buf: &mut [_; DISPLAY_SIZE * SIZE_OF_U16] = buf.last_chunk_mut().unwrap();
         inplace_float_to_segment_buffer(segment_buf, float, precision);
 
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
@@ -157,11 +159,11 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
 
     pub fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
     {
-        let mut buf = [0; DISPLAY_SIZE * 2 + 1];
+        let mut buf = [0; DISPLAY_SIZE * SIZE_OF_U16 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
-        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
+        let segment_buf: &mut [_; DISPLAY_SIZE * SIZE_OF_U16] = buf.last_chunk_mut().unwrap();
         inplace_unsigned_to_segment_buffer(segment_buf, fixed, precision);
 
         self.tx.write(
@@ -248,7 +250,7 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
     pub async fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
     {
         let buf = raw_segment_mask_to_buf(digits);
         self.tx
@@ -261,13 +263,17 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
     pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
-        [(); DISPLAY_SIZE * 2 - 2]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 - SIZE_OF_U16]: Sized,
     {
-        let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
+        let mut buf = [0; DISPLAY_SIZE * SIZE_OF_U16 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
         let segment_buf = buf.last_chunk_mut().unwrap();
-        inplace_float_to_segment_buffer::<{ DISPLAY_SIZE * 2 }>(segment_buf, float, precision);
+        inplace_float_to_segment_buffer::<{ DISPLAY_SIZE * SIZE_OF_U16 }>(
+            segment_buf,
+            float,
+            precision,
+        );
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
         self.tx
@@ -280,12 +286,16 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
 
     pub async fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
     where
-        [(); DISPLAY_SIZE * 2 + 1]: Sized,
+        [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
     {
-        let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
+        let mut buf = [0; DISPLAY_SIZE * SIZE_OF_U16 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
         let segment_buf = buf.last_chunk_mut().unwrap();
-        inplace_unsigned_to_segment_buffer::<{ DISPLAY_SIZE * 2 }>(segment_buf, fixed, precision);
+        inplace_unsigned_to_segment_buffer::<{ DISPLAY_SIZE * SIZE_OF_U16 }>(
+            segment_buf,
+            fixed,
+            precision,
+        );
 
         self.tx
             .write(
@@ -296,11 +306,11 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
     }
 }
 
-fn raw_segment_mask_to_buf<const N: usize>(segment_masks: &[u16; N]) -> [u8; N * 2 + 1]
+fn raw_segment_mask_to_buf<const N: usize>(segment_masks: &[u16; N]) -> [u8; N * SIZE_OF_U16 + 1]
 where
-    [(); N * 2 + 1]: Sized,
+    [(); N * SIZE_OF_U16 + 1]: Sized,
 {
-    let mut buf = [0; N * 2 + 1];
+    let mut buf = [0; N * SIZE_OF_U16 + 1];
     for (byte, segment_bits) in buf.iter_mut().zip(
         [HT16K33Commands::SetSegments as u8].into_iter().chain(
             segment_masks
@@ -314,7 +324,7 @@ where
 }
 
 fn add_midpoint_colon_segment<const N: usize>(
-    buf: &[u8; N * 2 + 1],
+    buf: &[u8; N * SIZE_OF_U16 + 1],
     enable_colon: bool,
 ) -> Vec<u8> {
     let (lhs, rhs) = buf.split_at(N + 1);
@@ -364,7 +374,7 @@ fn inplace_float_to_segment_buffer<const N: usize>(
     precision: u32,
 ) -> &mut [u8; N]
 where
-    [(); N - 2]: Sized,
+    [(); N - SIZE_OF_U16]: Sized,
 {
     // FIX: Look into dragon4 and grisu3 algorithms
     let is_neg = float.is_sign_negative();
@@ -373,16 +383,11 @@ where
 
     if is_neg {
         {
-            let prefix = buf.first_chunk_mut::<PREFIX_SIZE>().unwrap();
+            let prefix = buf.first_chunk_mut::<{ SIZE_OF_U16 }>().unwrap();
             *prefix = digit_segment_encoding::NEGATIVE.to_le_bytes();
         }
-        let digits = buf.last_chunk_mut().unwrap();
-        const PREFIX_SIZE: usize = size_of::<u16>();
-        inplace_unsigned_to_segment_buffer::<{ N - 2 }>(
-            digits as &mut [u8; N - 2],
-            digits_to_show,
-            precision,
-        );
+        let digits = buf.last_chunk_mut::<{ N - SIZE_OF_U16 }>().unwrap();
+        inplace_unsigned_to_segment_buffer(digits, digits_to_show, precision);
     } else {
         inplace_unsigned_to_segment_buffer(buf, digits_to_show, precision);
     }
