@@ -4,12 +4,15 @@
 //!
 //! The module contains two types of variants, and syncrhonous driver and an asynchronous driver.
 
+use core::mem::size_of;
+
 use alloc::vec::Vec;
 
 use embedded_hal::i2c::I2c as SyncI2c;
 use embedded_hal_async::i2c::I2c as AsyncI2c;
 
 mod digit_segment_encoding {
+    pub const NEGATIVE: u16 = 0b01000000;
     pub const DOT: u16 = 0b10000000;
     pub const ZERO: u16 = 0b00111111;
     pub const ONE: u16 = 0b00000110;
@@ -137,7 +140,7 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
     pub fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
-        [(); DISPLAY_SIZE * 2 - 1]: Sized,
+        [(); DISPLAY_SIZE * 2 - 2]: Sized,
     {
         let mut buf = [0; DISPLAY_SIZE * 2 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
@@ -259,12 +262,12 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
     pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * 2 + 1]: Sized,
-        [(); DISPLAY_SIZE * 2 - 1]: Sized,
+        [(); DISPLAY_SIZE * 2 - 2]: Sized,
     {
         let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
-        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
-        inplace_float_to_segment_buffer(segment_buf, float, precision);
+        let segment_buf = buf.last_chunk_mut().unwrap();
+        inplace_float_to_segment_buffer::<{ DISPLAY_SIZE * 2 }>(segment_buf, float, precision);
         // FIXME: Figure out a better way of distinguishing dedicated colon(s) in display (possibly
         // on construction)
         self.tx
@@ -281,8 +284,8 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
     {
         let mut buf: [_; DISPLAY_SIZE * 2 + 1] = [0; DISPLAY_SIZE * 2 + 1];
         buf[0] = HT16K33Commands::SetSegments as u8;
-        let segment_buf: &mut [_; DISPLAY_SIZE * 2] = buf.last_chunk_mut().unwrap();
-        inplace_unsigned_to_segment_buffer(segment_buf, fixed, precision);
+        let segment_buf = buf.last_chunk_mut().unwrap();
+        inplace_unsigned_to_segment_buffer::<{ DISPLAY_SIZE * 2 }>(segment_buf, fixed, precision);
 
         self.tx
             .write(
@@ -361,7 +364,7 @@ fn inplace_float_to_segment_buffer<const N: usize>(
     precision: u32,
 ) -> &mut [u8; N]
 where
-    [(); N - 1]: Sized,
+    [(); N - 2]: Sized,
 {
     // FIX: Look into dragon4 and grisu3 algorithms
     let is_neg = float.is_sign_negative();
@@ -369,8 +372,17 @@ where
     let digits_to_show = ((float * (base.pow(precision) as f64)) + 0.5) as u64;
 
     if is_neg {
-        let digits: &mut [_; N - 1] = buf.last_chunk_mut().unwrap();
-        inplace_unsigned_to_segment_buffer(digits, digits_to_show, precision);
+        {
+            let prefix = buf.first_chunk_mut::<PREFIX_SIZE>().unwrap();
+            *prefix = digit_segment_encoding::NEGATIVE.to_le_bytes();
+        }
+        let digits = buf.last_chunk_mut().unwrap();
+        const PREFIX_SIZE: usize = size_of::<u16>();
+        inplace_unsigned_to_segment_buffer::<{ N - 2 }>(
+            digits as &mut [u8; N - 2],
+            digits_to_show,
+            precision,
+        );
     } else {
         inplace_unsigned_to_segment_buffer(buf, digits_to_show, precision);
     }
