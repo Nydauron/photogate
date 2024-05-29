@@ -92,7 +92,7 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )?;
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
-            &[HT16K33Commands::SetBlink as u8 | 1],
+            &[HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON],
         )?;
         self.clear_display()?;
         Ok(())
@@ -247,7 +247,7 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
         self.tx
             .write(
                 HT16K33_BASE_CMD + self.address_offset,
-                &[HT16K33Commands::SetBlink as u8 | 1],
+                &[HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON],
             )
             .await?;
         self.clear_display().await?;
