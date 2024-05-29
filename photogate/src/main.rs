@@ -17,7 +17,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_hal_async::digital::Wait;
 use esp_backtrace as _;
-use esp_hal::gpio::{Gpio0, Gpio9, PullDown};
+use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Output, PullDown, PushPull};
 use esp_hal::i2c;
 use esp_hal::peripherals::I2C0;
 use esp_hal::systimer::SystemTimer;
@@ -47,6 +47,8 @@ enum FSMStates {
     TimerEnd,
 }
 
+#[allow(dead_code)]
+type LaserPin = Gpio4<Output<PushPull>>;
 type ButtonPin = Gpio9<Input<PullUp>>;
 type PhotodiodePin = Gpio0<Input<PullDown>>;
 type Photodiode = Mutex<CriticalSectionRawMutex, Option<PhotodiodePin>>;
@@ -308,6 +310,8 @@ async fn main(spawner: Spawner) {
     let photodiode = io.pins.gpio0.into_pull_down_input();
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
     let button = io.pins.gpio9.into_pull_up_input();
+    let mut laser = io.pins.gpio4.into_push_pull_output();
+    laser.set_low().unwrap();
 
     let i2c = i2c::I2C::new(
         peripherals.I2C0,
@@ -366,6 +370,7 @@ async fn main(spawner: Spawner) {
         let state = *STATE.lock().await.deref();
         match state {
             FSMStates::Idle => {
+                laser.set_low().unwrap();
                 // Wait for button press
                 if button_is_down {
                     // If press, go to Prepare
@@ -389,6 +394,7 @@ async fn main(spawner: Spawner) {
                 // Wait for laser to be aligned correctly
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
+                laser.set_high().unwrap();
                 if PHOTOGATE_READY.signaled() {
                     TIMER_SIGNAL.reset();
                     CANCEL_SIGNAL.reset();
@@ -411,6 +417,8 @@ async fn main(spawner: Spawner) {
                 }
             }
             FSMStates::Ready | FSMStates::TimerRunning => {
+                laser.set_high().unwrap();
+
                 if button_is_down {
                     CANCEL_SIGNAL.signal(());
                     *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
@@ -432,8 +440,10 @@ async fn main(spawner: Spawner) {
                 }
             }
             FSMStates::TimerEnd => {
-                // Display time.
+                laser.set_low().unwrap(); // FIX: Keep beam on for ~1-2 seconds to allow for human
+                                          // timing if needed
 
+                // Display time
                 if let (Some(start), Some(end)) = (start_time, end_time) {
                     let duration = end.duration_since(start);
                     info!(
