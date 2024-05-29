@@ -73,10 +73,18 @@ pub struct SyncI2C7SegDisplay<const DISPLAY_SIZE: usize, T: SyncI2c> {
 }
 
 impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> {
+    /// Creates a new synchronous driver instance
+    ///
+    /// In order to use the display, the driver needs to send initialization commands which can be
+    /// achieved by calling `initialize()`.
     pub fn new(address_offset: u8, tx: T) -> Self {
         Self { address_offset, tx }
     }
 
+    /// Initializes the HT16K33 IC chip
+    ///
+    /// Upon initialization, commands are sent to turn on the HT16K33's oscilator, turn on
+    /// the display, and clear the display.
     pub fn initialize(&mut self) -> Result<(), T::Error> {
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
@@ -90,6 +98,7 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         Ok(())
     }
 
+    /// Turns on the display
     pub fn enable(&mut self, turn_on: bool) -> Result<(), T::Error> {
         let mut buf = [0; 1];
         buf[0] = if turn_on {
@@ -101,6 +110,9 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         self.tx.write(HT16K33_BASE_CMD + self.address_offset, &buf)
     }
 
+    /// Clears the display
+    ///
+    /// Sends a zeroed buffer to the HT16K33 IC, turning off all segments and lights.
     pub fn clear_display(&mut self) -> Result<(), T::Error> {
         let mut empty_segment_command = [0; 17];
         empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
@@ -110,6 +122,10 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    /// Sets the brightness of the display
+    ///
+    /// Acceptable brightness values is a range from [0, 15]. Anything higher than 15 will be
+    /// interpreted as a brightness of 15.
     pub fn set_brightness(&mut self, mut brightness: u8) -> Result<(), T::Error> {
         const MAX_BRIGHTNESS: u8 = 0xf;
         if brightness > MAX_BRIGHTNESS {
@@ -121,6 +137,15 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    /// Sets the blinkrate of the display
+    ///
+    /// The HT16K33 chip supports 4 blink modes:
+    /// - 0: Blink off
+    /// - 1: 2Hz blink (1 period every 1/2 second)
+    /// - 2: 1Hz blink (1 period every second)
+    /// - 3: 1/2Hz blink (1 period every 2 seconds)
+    ///
+    /// These blink variants can be passed in using the `H16K33Blinkrate` enum.
     pub fn set_blinkrate(&mut self, blinkrate: H16K33Blinkrate) -> Result<(), T::Error> {
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
@@ -128,6 +153,10 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    /// Sends the passed segment buffer to the display
+    ///
+    /// This function does no transformation other than adding 2 bytes to the buffer to represent
+    /// the colon.
     pub fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
@@ -139,6 +168,14 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    /// Sends a floating point number to the display
+    ///
+    /// If there are not enough digits on the display to show the passed float, then the most
+    /// significant digits will be truncated off.
+    ///
+    /// <div class="warning">The current implementation does not accurately print the given number
+    /// due to several floating point arithmetic operations being used. Currently, rounding fixes
+    /// most cases, but does not ensure the exact float is printed.</div>
     pub fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
@@ -157,6 +194,13 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
         )
     }
 
+    /// Sends a fixed point number to the display
+    ///
+    /// If there are not enough digits on the display to show the passed float, then the most
+    /// significant digits will be truncated off.
+    ///
+    /// Unlike `write_f64()`, this function gaurentees `fixed * 10 ^ -precision` is printed to the
+    /// screen.
     pub fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
@@ -181,10 +225,18 @@ pub struct AsyncI2C7SegDisplay<const DISPLAY_SIZE: usize, T: AsyncI2c> {
 }
 
 impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T> {
+    /// Creates a new asynchronous driver instance
+    ///
+    /// In order to use the display, the driver needs to send initialization commands which can be
+    /// achieved by calling `initialize()`.
     pub fn new(address_offset: u8, tx: T) -> Self {
         Self { address_offset, tx }
     }
 
+    /// Initializes the HT16K33 IC chip
+    ///
+    /// Upon initialization, commands are sent to turn on the HT16K33's oscilator, turn on
+    /// the display, and clear the display.
     pub async fn initialize(&mut self) -> Result<(), T::Error> {
         self.tx
             .write(
@@ -202,6 +254,7 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
         Ok(())
     }
 
+    /// Turns on the display
     pub async fn enable(&mut self, turn_on: bool) -> Result<(), T::Error> {
         let mut buf = [0; 1];
         buf[0] = if turn_on {
@@ -215,6 +268,9 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Clears the display
+    ///
+    /// Sends a zeroed buffer to the HT16K33 IC, turning off all segments and lights.
     pub async fn clear_display(&mut self) -> Result<(), T::Error> {
         let mut empty_segment_command = [0; 17];
         empty_segment_command[0] = HT16K33Commands::SetSegments as u8;
@@ -226,6 +282,10 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Sets the brightness of the display
+    ///
+    /// Acceptable brightness values is a range from [0, 15]. Anything higher than 15 will be
+    /// interpreted as a brightness of 15.
     pub async fn set_brightness(&mut self, mut brightness: u8) -> Result<(), T::Error> {
         const MAX_BRIGHTNESS: u8 = 0xf;
         if brightness > MAX_BRIGHTNESS {
@@ -239,6 +299,15 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Sets the blinkrate of the display
+    ///
+    /// The HT16K33 chip supports 4 blink modes:
+    /// - 0: Blink off
+    /// - 1: 2Hz blink (1 period every 1/2 second)
+    /// - 2: 1Hz blink (1 period every second)
+    /// - 3: 1/2Hz blink (1 period every 2 seconds)
+    ///
+    /// These blink variants can be passed in using the `H16K33Blinkrate` enum.
     pub async fn set_blinkrate(&mut self, blinkrate: H16K33Blinkrate) -> Result<(), T::Error> {
         self.tx
             .write(
@@ -248,6 +317,10 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Sends the passed segment buffer to the display
+    ///
+    /// This function does no transformation other than adding 2 bytes to the buffer to represent
+    /// the colon.
     pub async fn write_raw(&mut self, digits: &[u16; DISPLAY_SIZE]) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
@@ -261,6 +334,14 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Sends a floating point number to the display
+    ///
+    /// If there are not enough digits on the display to show the passed float, then the most
+    /// significant digits will be truncated off.
+    ///
+    /// <div class="warning">The current implementation does not accurately print the given number
+    /// due to several floating point arithmetic operations being used. Currently, rounding fixes
+    /// most cases, but does not ensure the exact float is printed.</div>
     pub async fn write_f64(&mut self, float: f64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
@@ -284,6 +365,13 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
             .await
     }
 
+    /// Sends a fixed point number to the display
+    ///
+    /// If there are not enough digits on the display to show the passed float, then the most
+    /// significant digits will be truncated off.
+    ///
+    /// Unlike `write_f64()`, this function gaurentees `fixed * 10 ^ -precision` is printed to the
+    /// screen.
     pub async fn write_fixed_point_64(&mut self, fixed: u64, precision: u32) -> Result<(), T::Error>
     where
         [(); DISPLAY_SIZE * SIZE_OF_U16 + 1]: Sized,
