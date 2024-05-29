@@ -367,11 +367,6 @@ where
     let is_neg = float.is_sign_negative();
     let base = 10_u64;
     let digits_to_show = ((float * (base.pow(precision) as f64)) + 0.5) as u64;
-    let max_number = base.pow(N as u32);
-
-    if max_number <= digits_to_show {
-        todo!();
-    }
 
     if is_neg {
         let digits: &mut [_; N - 1] = buf.last_chunk_mut().unwrap();
