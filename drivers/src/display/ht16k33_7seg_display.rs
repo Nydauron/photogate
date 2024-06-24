@@ -4,10 +4,11 @@
 //!
 //! The module contains two types of variants, and syncrhonous driver and an asynchronous driver.
 
-use core::mem::size_of;
+use core::{marker, mem::size_of};
 
 use alloc::vec::Vec;
 
+use crate::initalization::*;
 use embedded_hal::i2c::I2c as SyncI2c;
 use embedded_hal_async::i2c::I2c as AsyncI2c;
 
@@ -65,27 +66,70 @@ enum HT16K33Commands {
     SetBrightness = 0xE0,
 }
 
-/// A syncrhonous driver for the HT16K33 driving a 7-segment display. Can be used with any I2C
+/// A synchronous driver for the HT16K33 driving a 7-segment display. Can be used with any I2C
 /// interface that implements the `embedded_hal::i2c::I2c` trait.
-pub struct SyncI2C7SegDisplay<const DISPLAY_SIZE: usize, T: SyncI2c> {
+///
+/// When using this driver, please note that the initialization method `initialize()` must be
+/// called first before attempting to perform other display commands. Not only would this not
+/// compile, but also the display would not show the changes you made.
+///
+/// Note that the following examples are to show compilation success and failure. The
+/// embedded-hal-mock crate is no a good working example here since there is no way of calling
+/// `i2c.done()` at the end of the snippet since the display driver takes ownership of the I2C
+/// driver.
+/// ```no_run
+/// use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+/// use drivers::display::ht16k33_7seg_display::SyncI2C7SegDisplay;
+///
+/// let i2c = I2cMock::new(&[]); // Your specific-chip I2C driver here
+/// let display = SyncI2C7SegDisplay::<4, _>::new(0, i2c);
+/// let mut display = display.initialize().unwrap();
+/// display.write_raw(&[0xff; 4]).unwrap();
+/// ```
+///
+/// ```compile_fail
+/// use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+/// use drivers::display::ht16k33_7seg_display::SyncI2C7SegDisplay;
+///
+/// let i2c = I2cMock::new(&[]); // Your specific-chip I2C driver here
+/// let mut display = SyncI2C7SegDisplay::<4, _>::new(0, i2c);
+/// display.write_raw(&[0xff; 4]).unwrap();
+/// i2c.done();
+/// ```
+pub struct SyncI2C7SegDisplay<
+    const DISPLAY_SIZE: usize,
+    T: SyncI2c,
+    State: InitializationState = Uninitalized,
+> {
+    state: marker::PhantomData<State>,
     address_offset: u8,
     tx: T,
 }
 
-impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> {
+impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T, Uninitalized> {
     /// Creates a new synchronous driver instance
     ///
-    /// In order to use the display, the driver needs to send initialization commands which can be
-    /// achieved by calling `initialize()`.
-    pub fn new(address_offset: u8, tx: T) -> Self {
-        Self { address_offset, tx }
+    /// Please note that the type returned is an uninitalized variant. In order to use the display,
+    /// the driver needs to send initialization commands which can be achieved by calling
+    /// `initialize()`.
+    pub fn new(address_offset: u8, tx: T) -> SyncI2C7SegDisplay<DISPLAY_SIZE, T, Uninitalized> {
+        SyncI2C7SegDisplay {
+            state: marker::PhantomData::<Uninitalized>,
+            address_offset,
+            tx,
+        }
     }
 
     /// Initializes the HT16K33 IC chip
     ///
     /// Upon initialization, commands are sent to turn on the HT16K33's oscilator, turn on
     /// the display, and clear the display.
-    pub fn initialize(&mut self) -> Result<(), T::Error> {
+    ///
+    /// The returned `SyncI2C7SegDisplay` type is marked as initialized and the type system now
+    /// allows you to use other methods and commands.
+    pub fn initialize(
+        mut self,
+    ) -> Result<SyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized>, T::Error> {
         self.tx.write(
             HT16K33_BASE_CMD + self.address_offset,
             &[HT16K33Commands::Begin as u8],
@@ -94,10 +138,22 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
             HT16K33_BASE_CMD + self.address_offset,
             &[HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON],
         )?;
-        self.clear_display()?;
-        Ok(())
+
+        let mut initialized_display = self.consume_display();
+        initialized_display.clear_display()?;
+        Ok(initialized_display)
     }
 
+    fn consume_display(self) -> SyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized> {
+        SyncI2C7SegDisplay {
+            state: marker::PhantomData::<Initialized>,
+            address_offset: self.address_offset,
+            tx: self.tx,
+        }
+    }
+}
+
+impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized> {
     /// Turns on the display
     pub fn enable(&mut self, turn_on: bool) -> Result<(), T::Error> {
         let mut buf = [0; 1];
@@ -217,27 +273,73 @@ impl<const DISPLAY_SIZE: usize, T: SyncI2c> SyncI2C7SegDisplay<DISPLAY_SIZE, T> 
     }
 }
 
-/// An asyncrhonous driver for the HT16K33 driving a 7-segment display. Can be used with any I2C
+/// An asynchronous driver for the HT16K33 driving a 7-segment display. Can be used with any I2C
 /// interface that implements the `embedded_hal_async::i2c::I2c` trait.
-pub struct AsyncI2C7SegDisplay<const DISPLAY_SIZE: usize, T: AsyncI2c> {
+///
+/// When using this driver, please note that the initialization method `initialize()` must be
+/// called first before attempting to perform other display commands. Not only would this not
+/// compile, but also the display would not show the changes you made.
+///
+/// Note that the following examples are to show compilation success and failure. The
+/// embedded-hal-mock crate is no a good working example here since there is no way of calling
+/// `i2c.done()` at the end of the snippet since the display driver takes ownership of the I2C
+/// driver.
+/// ```no_run
+/// use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+/// use drivers::display::ht16k33_7seg_display::AsyncI2C7SegDisplay;
+///
+/// let main = async move {
+///     let i2c = I2cMock::new(&[]); // Your specific-chip I2C driver here
+///     let display = AsyncI2C7SegDisplay::<4, _>::new(0, i2c);
+///     let mut display = display.initialize().await.unwrap();
+///     display.write_raw(&[0xff; 4]).await.unwrap();
+/// };
+/// ```
+///
+/// ```compile_fail
+/// use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+/// use drivers::display::ht16k33_7seg_display::AsyncI2C7SegDisplay;
+///
+/// let main = async move {
+///     let i2c = I2cMock::new(&[]); // Your specific-chip I2C driver here
+///     let mut display = AsyncI2C7SegDisplay::<4, _>::new(0, i2c);
+///     display.write_raw(&[0xff; 4]).await.unwrap();
+/// };
+/// ```
+pub struct AsyncI2C7SegDisplay<
+    const DISPLAY_SIZE: usize,
+    T: AsyncI2c,
+    State: InitializationState = Uninitalized,
+> {
+    state: marker::PhantomData<State>,
     address_offset: u8,
     tx: T,
 }
 
-impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T> {
+impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T, Uninitalized> {
     /// Creates a new asynchronous driver instance
     ///
-    /// In order to use the display, the driver needs to send initialization commands which can be
-    /// achieved by calling `initialize()`.
-    pub fn new(address_offset: u8, tx: T) -> Self {
-        Self { address_offset, tx }
+    /// Please note that the type returned is an uninitalized variant. In order to use the display,
+    /// the driver needs to send initialization commands which can be achieved by calling
+    /// `initialize()`.
+    pub fn new(address_offset: u8, tx: T) -> AsyncI2C7SegDisplay<DISPLAY_SIZE, T, Uninitalized> {
+        AsyncI2C7SegDisplay {
+            state: marker::PhantomData::<Uninitalized>,
+            address_offset,
+            tx,
+        }
     }
 
     /// Initializes the HT16K33 IC chip
     ///
     /// Upon initialization, commands are sent to turn on the HT16K33's oscilator, turn on
     /// the display, and clear the display.
-    pub async fn initialize(&mut self) -> Result<(), T::Error> {
+    ///
+    /// The returned `AsyncI2C7SegDisplay` type is marked as initialized and the type system now
+    /// allows you to use other methods and commands.
+    pub async fn initialize(
+        mut self,
+    ) -> Result<AsyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized>, T::Error> {
         self.tx
             .write(
                 HT16K33_BASE_CMD + self.address_offset,
@@ -250,10 +352,21 @@ impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T
                 &[HT16K33Commands::SetBlink as u8 | HT16K33_DISPLAY_ON],
             )
             .await?;
-        self.clear_display().await?;
-        Ok(())
+        let mut initialized_display = self.consume_display();
+        initialized_display.clear_display().await?;
+        Ok(initialized_display)
     }
 
+    fn consume_display(self) -> AsyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized> {
+        AsyncI2C7SegDisplay {
+            state: marker::PhantomData::<Initialized>,
+            address_offset: self.address_offset,
+            tx: self.tx,
+        }
+    }
+}
+
+impl<const DISPLAY_SIZE: usize, T: AsyncI2c> AsyncI2C7SegDisplay<DISPLAY_SIZE, T, Initialized> {
     /// Turns on the display
     pub async fn enable(&mut self, turn_on: bool) -> Result<(), T::Error> {
         let mut buf = [0; 1];

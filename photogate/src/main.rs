@@ -34,6 +34,7 @@ use futures::future::{select, Either};
 use strum::EnumCount;
 
 use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
+use drivers::initalization::Initialized;
 
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
@@ -164,7 +165,7 @@ async fn handle_photodiode(
 
 #[embassy_executor::task]
 async fn handle_segment_display(
-    mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0>>,
+    mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0>, Initialized>,
     command: &'static Signal<CriticalSectionRawMutex, DisplayCommand>,
 ) -> ! {
     display.clear_display().await.unwrap();
@@ -321,9 +322,10 @@ async fn main(spawner: Spawner) {
         1_u32.MHz(),
         &clocks,
     );
-    let mut display = AsyncI2C7SegDisplay::<DISPLAY_LENGTH, _>::new(0, i2c);
+    let display = AsyncI2C7SegDisplay::<DISPLAY_LENGTH, _, _>::new(0, i2c);
 
-    display.initialize().await.unwrap();
+    let mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, _, _> =
+        display.initialize().await.unwrap();
     display.set_brightness(15).await.unwrap();
 
     esp_hal::interrupt::enable(
