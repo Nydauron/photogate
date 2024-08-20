@@ -15,20 +15,18 @@ use embassy_sync::{
     signal::Signal,
 };
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use embedded_hal_async::digital::Wait;
 use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Output, PullDown, PushPull};
-use esp_hal::i2c;
 use esp_hal::peripherals::I2C0;
 use esp_hal::systimer::SystemTimer;
 use esp_hal::{
     clock::ClockControl,
     embassy,
-    gpio::{Input, PullUp},
+    gpio::{Input, PullUp, IO},
     peripherals::Peripherals,
     prelude::*,
-    IO,
 };
+use esp_hal::{i2c, Async};
 use esp_println as _;
 use futures::future::{select, Either};
 use strum::EnumCount;
@@ -99,9 +97,9 @@ async fn handle_button(
     channel: Sender<'static, CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_BUFFER_SIZE>,
 ) -> ! {
     loop {
-        button.wait_for_low().await.unwrap();
+        button.wait_for_low().await;
         channel.send(InputEvent::ButtonDown).await;
-        button.wait_for_high().await.unwrap();
+        button.wait_for_high().await;
         channel.send(InputEvent::ButtonUp).await;
     }
 }
@@ -165,7 +163,7 @@ async fn handle_photodiode(
 
 #[embassy_executor::task]
 async fn handle_segment_display(
-    mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0>, Initialized>,
+    mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, i2c::I2C<'static, I2C0, Async>, Initialized>,
     command: &'static Signal<CriticalSectionRawMutex, DisplayCommand>,
 ) -> ! {
     display.clear_display().await.unwrap();
@@ -304,17 +302,26 @@ async fn main(spawner: Spawner) {
     let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let systimer = SystemTimer::new(peripherals.SYSTIMER);
+    let systimer = SystemTimer::new_async(peripherals.SYSTIMER);
     embassy::init(&clocks, systimer);
+    // let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 
+    // let ble_init = esp_wifi::initialize(
+    //     esp_wifi::EspWifiInitFor::Ble,
+    //     timg0,
+    //     rng::Rng::new(peripherals.RNG),
+    //     peripherals.RADIO_CLK,
+    //     &clocks,
+    // )
+    // .unwrap();
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let photodiode = io.pins.gpio0.into_pull_down_input();
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
     let button = io.pins.gpio9.into_pull_up_input();
     let mut laser = io.pins.gpio4.into_push_pull_output();
-    laser.set_low().unwrap();
+    laser.set_low();
 
-    let i2c = i2c::I2C::new(
+    let i2c = i2c::I2C::new_async(
         peripherals.I2C0,
         io.pins.gpio1,
         io.pins.gpio2,
@@ -327,12 +334,6 @@ async fn main(spawner: Spawner) {
     let mut display: AsyncI2C7SegDisplay<DISPLAY_LENGTH, _, _> =
         display.initialize().await.unwrap();
     display.set_brightness(15).await.unwrap();
-
-    esp_hal::interrupt::enable(
-        esp_hal::peripherals::Interrupt::GPIO,
-        esp_hal::interrupt::Priority::Priority1,
-    )
-    .unwrap();
 
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
@@ -372,7 +373,7 @@ async fn main(spawner: Spawner) {
         let state = *STATE.lock().await.deref();
         match state {
             FSMStates::Idle => {
-                laser.set_low().unwrap();
+                laser.set_low();
                 // Wait for button press
                 if button_is_down {
                     // If press, go to Prepare
@@ -396,7 +397,7 @@ async fn main(spawner: Spawner) {
                 // Wait for laser to be aligned correctly
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
-                laser.set_high().unwrap();
+                laser.set_high();
                 if PHOTOGATE_READY.signaled() {
                     TIMER_SIGNAL.reset();
                     CANCEL_SIGNAL.reset();
@@ -419,7 +420,7 @@ async fn main(spawner: Spawner) {
                 }
             }
             FSMStates::Ready | FSMStates::TimerRunning => {
-                laser.set_high().unwrap();
+                laser.set_high();
 
                 if button_is_down {
                     CANCEL_SIGNAL.signal(());
@@ -442,8 +443,8 @@ async fn main(spawner: Spawner) {
                 }
             }
             FSMStates::TimerEnd => {
-                laser.set_low().unwrap(); // FIX: Keep beam on for ~1-2 seconds to allow for human
-                                          // timing if needed
+                laser.set_low(); // FIX: Keep beam on for ~1-2 seconds to allow for human
+                                 // timing if needed
 
                 // Display time
                 if let (Some(start), Some(end)) = (start_time, end_time) {
