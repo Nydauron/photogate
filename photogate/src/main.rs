@@ -16,15 +16,15 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_backtrace as _;
-use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Output, PullDown, PushPull};
+use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Level, Output, Pull};
 use esp_hal::peripherals::I2C0;
-use esp_hal::systimer::SystemTimer;
+use esp_hal::system::SystemControl;
 use esp_hal::{
     clock::ClockControl,
-    embassy,
-    gpio::{Input, PullUp, IO},
+    gpio::{Input, Io},
     peripherals::Peripherals,
     prelude::*,
+    timer::systimer::SystemTimer,
 };
 use esp_hal::{i2c, Async};
 use esp_println as _;
@@ -47,9 +47,9 @@ enum FSMStates {
 }
 
 #[allow(dead_code)]
-type LaserPin = Gpio4<Output<PushPull>>;
-type ButtonPin = Gpio9<Input<PullUp>>;
-type PhotodiodePin = Gpio0<Input<PullDown>>;
+type LaserPin = Output<'static, Gpio4>;
+type ButtonPin = Input<'static, Gpio9>;
+type PhotodiodePin = Input<'static, Gpio0>;
 type Photodiode = Mutex<CriticalSectionRawMutex, Option<PhotodiodePin>>;
 
 static PHOTODIODE_INPUT: Photodiode = Mutex::new(None);
@@ -299,11 +299,11 @@ async fn main(spawner: Spawner) {
         ALLOCATOR.init(0x5000_0000 as *mut u8, 4 * 1024);
     }
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
     let systimer = SystemTimer::new_async(peripherals.SYSTIMER);
-    embassy::init(&clocks, systimer);
+    esp_hal_embassy::init(&clocks, systimer);
     // let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
 
     // let ble_init = esp_wifi::initialize(
@@ -314,11 +314,11 @@ async fn main(spawner: Spawner) {
     //     &clocks,
     // )
     // .unwrap();
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let photodiode = io.pins.gpio0.into_pull_down_input();
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let photodiode = Input::new(io.pins.gpio0, Pull::Down);
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
-    let button = io.pins.gpio9.into_pull_up_input();
-    let mut laser = io.pins.gpio4.into_push_pull_output();
+    let button = Input::new(io.pins.gpio9, Pull::Up);
+    let mut laser = Output::new(io.pins.gpio4, Level::Low);
     laser.set_low();
 
     let i2c = i2c::I2C::new_async(
