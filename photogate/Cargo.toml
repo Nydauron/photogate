@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 embassy-executor = { version = "0.5.0", features = ["defmt", "nightly", "integrated-timers"] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "fa94b5cec0ea257a5619db361081c340cefe6af6", version = "0.5.0", features = ["defmt"] }
+embassy-sync = { version = "0.6.0", features = ["defmt"] }
 embassy-time = { version = "0.3.0", features = ["defmt", "defmt-timestamp-uptime"] }
 embedded-hal-async = "1.0.0"
 esp-alloc = "0.3.0"

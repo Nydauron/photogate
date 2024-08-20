@@ -223,8 +223,9 @@ dependencies = [
 
 [[package]]
 name = "embassy-sync"
-version = "0.5.0"
-source = "git+https://github.com/embassy-rs/embassy.git?rev=fa94b5cec0ea257a5619db361081c340cefe6af6#fa94b5cec0ea257a5619db361081c340cefe6af6"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3e0c49ff02ebe324faf3a8653ba91582e2d0a7fdef5bc88f449d5aa1bfcc05c"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -454,7 +455,7 @@ dependencies = [
  "document-features",
  "embassy-executor",
  "embassy-futures",
- "embassy-sync 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "embassy-sync 0.5.0",
  "embassy-time-driver",
  "embedded-can",
  "embedded-dma",
@@ -893,7 +894,7 @@ dependencies = [
  "defmt",
  "drivers",
  "embassy-executor",
- "embassy-sync 0.5.0 (git+https://github.com/embassy-rs/embassy.git?rev=fa94b5cec0ea257a5619db361081c340cefe6af6)",
+ "embassy-sync 0.6.0",
  "embassy-time",
  "embedded-hal-async",
  "esp-alloc",
