@@ -19,3 +19,9 @@ incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
+
+[profile.dev.package.esp-hal]
+opt-level = 3
+
+# [profile.dev.package.esp-hal-embassy]
+# opt-level = 3

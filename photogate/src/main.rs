@@ -19,16 +19,17 @@ use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Level, Output, Pull};
 use esp_hal::peripherals::I2C0;
 use esp_hal::system::SystemControl;
+use esp_hal::timer::{systimer, OneShotTimer};
 use esp_hal::{
     clock::ClockControl,
     gpio::{Input, Io},
     peripherals::Peripherals,
     prelude::*,
-    timer::systimer::SystemTimer,
 };
 use esp_hal::{i2c, Async};
 use esp_println as _;
 use futures::future::{select, Either};
+use static_cell::make_static;
 use strum::EnumCount;
 
 use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
@@ -302,18 +303,14 @@ async fn main(spawner: Spawner) {
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let systimer = SystemTimer::new_async(peripherals.SYSTIMER);
-    esp_hal_embassy::init(&clocks, systimer);
-    // let timg0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+    {
+        let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER);
+        esp_hal_embassy::init(
+            &clocks,
+            make_static!([OneShotTimer::new(systimer.alarm0.into()); 1]),
+        );
+    }
 
-    // let ble_init = esp_wifi::initialize(
-    //     esp_wifi::EspWifiInitFor::Ble,
-    //     timg0,
-    //     rng::Rng::new(peripherals.RNG),
-    //     peripherals.RADIO_CLK,
-    //     &clocks,
-    // )
-    // .unwrap();
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let photodiode = Input::new(io.pins.gpio0, Pull::Down);
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
