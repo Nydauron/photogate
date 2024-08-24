@@ -303,14 +303,6 @@ async fn main(spawner: Spawner) {
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    {
-        let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER);
-        esp_hal_embassy::init(
-            &clocks,
-            make_static!([OneShotTimer::new(systimer.alarm0.into()); 1]),
-        );
-    }
-
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let photodiode = Input::new(io.pins.gpio0, Pull::Down);
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
@@ -331,14 +323,22 @@ async fn main(spawner: Spawner) {
         display.initialize().await.unwrap();
     display.set_brightness(15).await.unwrap();
 
-    spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
-    spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     let mut start_time = None;
     let mut end_time = None;
 
     let mut ticker = Ticker::every(Duration::from_millis(1));
 
     let mut button_is_down = false;
+
+    {
+        let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER);
+        esp_hal_embassy::init(
+            &clocks,
+            make_static!([OneShotTimer::new(systimer.alarm0.into()); 1]),
+        );
+    }
+    spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
+    spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     loop {
         // Use embassy_sync::channel::Channel and have here receive messages from input tasks
         // This ensures events and signals from inputs are all handled and none are skipped.
