@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 
 extern crate alloc;
 
@@ -20,7 +21,7 @@ use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Level, Output, Pull};
 use esp_hal::peripherals::I2C0;
 use esp_hal::system::SystemControl;
-use esp_hal::timer::{systimer, OneShotTimer};
+use esp_hal::timer::systimer;
 use esp_hal::{
     clock::ClockControl,
     gpio::{Input, Io},
@@ -30,7 +31,6 @@ use esp_hal::{
 use esp_hal::{i2c, Async};
 use esp_println as _;
 use futures::future::{select, Either};
-use static_cell::make_static;
 use strum::EnumCount;
 
 use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
@@ -289,7 +289,7 @@ async fn check_laser_is_aligned(
     }
 }
 
-#[main]
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     heap_allocator!(32_168);
     let peripherals = Peripherals::take();
@@ -323,13 +323,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut button_is_down = false;
 
-    {
-        let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER);
-        esp_hal_embassy::init(
-            &clocks,
-            make_static!([OneShotTimer::new(systimer.alarm0.into()); 1]),
-        );
-    }
+    let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER).split::<systimer::Target>();
+    esp_hal_embassy::init(&clocks, systimer.alarm0);
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     loop {
