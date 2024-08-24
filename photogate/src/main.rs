@@ -292,7 +292,7 @@ async fn check_laser_is_aligned(
 }
 
 #[main]
-async fn main(spawner: Spawner) {
+async fn main(spawner: Spawner) -> ! {
     unsafe {
         // freeze occurs when using this
         // memory range for heap
