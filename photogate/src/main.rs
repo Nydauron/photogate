@@ -131,12 +131,17 @@ fn handle_gpio() {
         // interrupts are synchronous and we cannot block as that would freeze the entire program.
         // Hence, we opt for a synchronous, non-blocking approach.
         let now = Instant::now();
-        INPUT_CHANNEL
+        match INPUT_CHANNEL
             .immediate_publisher()
-            .publish_immediate(ButtonLevel {
+            .try_publish(ButtonLevel {
                 ts: now,
                 level: new_button_state,
-            });
+            }) {
+            Ok(_) => {}
+            Err(_) => {
+                warn!("Button: Input PubSub is full.")
+            }
+        }
     }
 }
 
