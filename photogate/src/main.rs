@@ -5,36 +5,39 @@
 
 extern crate alloc;
 
-use core::ops::{Deref, DerefMut};
-use core::pin::pin;
+use core::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    pin::pin,
+};
+
+use critical_section::Mutex as CSMutex;
 use defmt::{debug, error, info, warn};
+use drivers::{
+    display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate},
+    initalization::Initialized,
+};
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex;
 use embassy_sync::{
-    channel::{Channel, Sender},
+    blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex, pubsub::PubSubChannel,
     signal::Signal,
 };
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp_alloc::heap_allocator;
 use esp_backtrace as _;
-use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Level, Output, Pull};
-use esp_hal::peripherals::I2C0;
-use esp_hal::system::SystemControl;
-use esp_hal::timer::systimer;
 use esp_hal::{
     clock::ClockControl,
-    gpio::{Input, Io},
-    peripherals::Peripherals,
+    gpio::{Event, Gpio0, Gpio4, Gpio9, Input, Io, Level, Output, Pull},
+    i2c,
+    peripherals::{Peripherals, I2C0},
     prelude::*,
+    system::SystemControl,
+    timer::systimer,
+    Async,
 };
-use esp_hal::{i2c, Async};
 use esp_println as _;
 use futures::future::{select, Either};
 use strum::EnumCount;
-
-use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
-use drivers::initalization::Initialized;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
 enum FSMStates {
@@ -62,16 +65,34 @@ const SECS_TO_MICROS: u32 = 1_000_000;
 
 static DISPLAY_COMMAND: Signal<CriticalSectionRawMutex, DisplayCommand> = Signal::new();
 const INPUT_CHANNEL_BUFFER_SIZE: usize = 64;
-static INPUT_CHANNEL: Channel<CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_BUFFER_SIZE> =
-    Channel::new();
+static INPUT_CHANNEL: PubSubChannel<
+    CriticalSectionRawMutex,
+    ButtonLevel,
+    INPUT_CHANNEL_BUFFER_SIZE,
+    1,
+    1,
+> = PubSubChannel::new();
 static TIMER_SIGNAL: Signal<CriticalSectionRawMutex, TimerSignal> = Signal::new();
 static CANCEL_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 static PHOTOGATE_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-enum InputEvent {
-    ButtonDown,
-    ButtonUp,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ButtonLevel {
+    ts: Instant,
+    level: Level,
+}
+
+impl Ord for ButtonLevel {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.ts.cmp(&other.ts)
+    }
+}
+
+impl PartialOrd for ButtonLevel {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,19 +108,35 @@ enum DisplayCommand {
     },
 }
 
-// FIXME: Potential bug when using wait_for_low and wait_for_high:
-// A press could in theory trigger (low and then high) in between the await statements
-// Check embassy docs if they have any solution to this
-#[embassy_executor::task]
-async fn handle_button(
-    mut button: ButtonPin,
-    channel: Sender<'static, CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_BUFFER_SIZE>,
-) -> ! {
-    loop {
-        button.wait_for_low().await;
-        channel.send(InputEvent::ButtonDown).await;
-        button.wait_for_high().await;
-        channel.send(InputEvent::ButtonUp).await;
+static BUTTON: CSMutex<RefCell<Option<ButtonPin>>> = CSMutex::new(RefCell::new(None));
+
+#[handler]
+fn handle_gpio() {
+    if let Some(new_button_state) = critical_section::with(|cs| {
+        let interrupt_fired = BUTTON.borrow_ref(cs).as_ref().unwrap().is_interrupt_set();
+        let state = BUTTON.borrow_ref(cs).as_ref().unwrap().get_level();
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt();
+        interrupt_fired.then_some(state)
+    }) {
+        // NOTE: This current implementation will override presses if the PubSub fills up. If there
+        // is no more space to put another `ButtonLevel` into the PubSub, the earliest item in the
+        // channel (that has not been read by everyone yet) will be removed.
+        //
+        // The reason why we are opting for a eventually-consistent high availabilty is to minimize
+        // the amount of time we spend in the interrupt handler. We cannot use yield since
+        // interrupts are synchronous and we cannot block as that would freeze the entire program.
+        // Hence, we opt for a synchronous, non-blocking approach.
+        let now = Instant::now();
+        INPUT_CHANNEL
+            .immediate_publisher()
+            .publish_immediate(ButtonLevel {
+                ts: now,
+                level: new_button_state,
+            });
     }
 }
 
@@ -296,10 +333,15 @@ async fn main(spawner: Spawner) -> ! {
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    io.set_interrupt_handler(handle_gpio);
     let photodiode = Input::new(io.pins.gpio0, Pull::Down);
     PHOTODIODE_INPUT.lock().await.replace(photodiode);
-    let button = Input::new(io.pins.gpio9, Pull::Up);
+    let mut button = Input::new(io.pins.gpio9, Pull::Up);
+    critical_section::with(|cs| {
+        button.listen(Event::AnyEdge);
+        BUTTON.replace(cs, Some(button));
+    });
     let mut laser = Output::new(io.pins.gpio4, Level::Low);
     laser.set_low();
 
@@ -322,10 +364,10 @@ async fn main(spawner: Spawner) -> ! {
     let mut ticker = Ticker::every(Duration::from_millis(1));
 
     let mut button_is_down = false;
+    let mut input_sub = INPUT_CHANNEL.subscriber().unwrap();
 
     let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER).split::<systimer::Target>();
     esp_hal_embassy::init(&clocks, systimer.alarm0);
-    spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     loop {
         ticker.next().await;
@@ -337,7 +379,7 @@ async fn main(spawner: Spawner) -> ! {
         // 1. We want to ensure all inputs for the given timestamp are handled and are up-to-date
         // 2. Keeps the channel buffer empty ensuring input tasks do not get blocked leading to an
         // unresponsive device
-        while let Ok(input) = INPUT_CHANNEL.try_receive() {
+        while let Some(input) = input_sub.try_next_message_pure() {
             // TODO: How would we detect button presses vs holds? Is that absolutely necessary?
             // (probably)
             // e.g. case:
@@ -345,12 +387,12 @@ async fn main(spawner: Spawner) -> ! {
             // The button was pressed, but the final value of button_is_down will be false
             // However, we would want to move to the Prepare state due to the press
             // Same thing *can* happen with the photodiode (rare but not infeasible)
-            match input {
-                InputEvent::ButtonDown => {
-                    button_is_down = true;
-                }
-                InputEvent::ButtonUp => {
+            match input.level {
+                Level::High => {
                     button_is_down = false;
+                }
+                Level::Low => {
+                    button_is_down = true;
                 }
             }
         }
@@ -363,6 +405,9 @@ async fn main(spawner: Spawner) -> ! {
                 if button_is_down {
                     // If press, go to Prepare
                     PHOTOGATE_READY.reset();
+                    // FIXME: Current implementation with button interrupt code and pubsub channel
+                    // processing can cause a backlog of responses in the pubsub queue which
+                    // affectively DoS the device
                     match spawner.spawn(check_laser_is_aligned(&PHOTODIODE_INPUT, &PHOTOGATE_READY))
                     {
                         Ok(_) => {
