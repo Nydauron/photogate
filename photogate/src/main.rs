@@ -322,8 +322,7 @@ async fn main(spawner: Spawner) {
         peripherals.I2C0,
         io.pins.gpio1,
         io.pins.gpio2,
-        // 100_u32.kHz(),
-        1_u32.MHz(),
+        400_u32.kHz(),
         &clocks,
     );
     let display = AsyncI2C7SegDisplay::<DISPLAY_LENGTH, _, _>::new(0, i2c);
