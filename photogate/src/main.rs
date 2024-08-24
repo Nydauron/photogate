@@ -112,6 +112,7 @@ static BUTTON: CSMutex<RefCell<Option<ButtonPin>>> = CSMutex::new(RefCell::new(N
 
 #[handler]
 fn handle_gpio() {
+    debug!("GPIO interrupt");
     if let Some(new_button_state) = critical_section::with(|cs| {
         let interrupt_fired = BUTTON.borrow_ref(cs).as_ref().unwrap().is_interrupt_set();
         let state = BUTTON.borrow_ref(cs).as_ref().unwrap().get_level();
@@ -130,6 +131,7 @@ fn handle_gpio() {
         // the amount of time we spend in the interrupt handler. We cannot use yield since
         // interrupts are synchronous and we cannot block as that would freeze the entire program.
         // Hence, we opt for a synchronous, non-blocking approach.
+        debug!("button interrupt");
         let now = Instant::now();
         match INPUT_CHANNEL
             .immediate_publisher()
