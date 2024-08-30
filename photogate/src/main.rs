@@ -15,6 +15,7 @@ use embassy_sync::{
     signal::Signal,
 };
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use esp_alloc::heap_allocator;
 use esp_backtrace as _;
 use esp_hal::gpio::{Gpio0, Gpio4, Gpio9, Level, Output, Pull};
 use esp_hal::peripherals::I2C0;
@@ -34,9 +35,6 @@ use strum::EnumCount;
 
 use drivers::display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate};
 use drivers::initalization::Initialized;
-
-#[global_allocator]
-static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
 enum FSMStates {
@@ -293,12 +291,7 @@ async fn check_laser_is_aligned(
 
 #[main]
 async fn main(spawner: Spawner) -> ! {
-    unsafe {
-        // freeze occurs when using this
-        // memory range for heap
-        // ALLOCATOR.init(0x3FC8_0000 as *mut u8, 192 * 1024);
-        ALLOCATOR.init(0x5000_0000 as *mut u8, 4 * 1024);
-    }
+    heap_allocator!(32_168);
     let peripherals = Peripherals::take();
     let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
