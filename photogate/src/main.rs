@@ -8,11 +8,10 @@ extern crate alloc;
 use core::{
     cell::RefCell,
     ops::{Deref, DerefMut},
-    pin::pin,
 };
 
 use critical_section::Mutex as CSMutex;
-use defmt::{debug, error, info, warn};
+use defmt::{debug, info, warn};
 use drivers::{
     display::ht16k33_7seg_display::{AsyncI2C7SegDisplay, H16K33Blinkrate},
     initalization::Initialized,
@@ -36,25 +35,24 @@ use esp_hal::{
     Async,
 };
 use esp_println as _;
-use futures::future::{select, Either};
-use strum::EnumCount;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCount)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FSMStates {
-    Idle = 0,
+    Idle,
     Prepare,
     Ready,
-    TimerRunning,
-    TimerEnd,
+    TimerStart { start: Instant },
+    TimerRunning { start: Instant },
+    TimerEnd { start: Instant, end: Instant },
 }
 
 #[allow(dead_code)]
 type LaserPin = Output<'static, Gpio4>;
 type ButtonPin = Input<'static, Gpio9>;
 type PhotodiodePin = Input<'static, Gpio0>;
-type Photodiode = Mutex<CriticalSectionRawMutex, Option<PhotodiodePin>>;
+type Photodiode = CSMutex<RefCell<Option<PhotodiodePin>>>;
 
-static PHOTODIODE_INPUT: Photodiode = Mutex::new(None);
+static PHOTODIODE_INPUT: Photodiode = CSMutex::new(RefCell::new(None));
 
 const DISPLAY_LENGTH: usize = 4;
 
@@ -67,29 +65,34 @@ static DISPLAY_COMMAND: Signal<CriticalSectionRawMutex, DisplayCommand> = Signal
 const INPUT_CHANNEL_BUFFER_SIZE: usize = 64;
 static INPUT_CHANNEL: PubSubChannel<
     CriticalSectionRawMutex,
-    ButtonLevel,
+    InputType,
     INPUT_CHANNEL_BUFFER_SIZE,
     1,
     1,
 > = PubSubChannel::new();
-static TIMER_SIGNAL: Signal<CriticalSectionRawMutex, TimerSignal> = Signal::new();
 static CANCEL_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 static PHOTOGATE_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ButtonLevel {
+enum InputType {
+    Button(InputLevel),
+    Photodiode(InputLevel),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputLevel {
     ts: Instant,
     level: Level,
 }
 
-impl Ord for ButtonLevel {
+impl Ord for InputLevel {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.ts.cmp(&other.ts)
     }
 }
 
-impl PartialOrd for ButtonLevel {
+impl PartialOrd for InputLevel {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -113,94 +116,56 @@ static BUTTON: CSMutex<RefCell<Option<ButtonPin>>> = CSMutex::new(RefCell::new(N
 #[handler]
 fn handle_gpio() {
     debug!("GPIO interrupt");
+    let now = Instant::now();
+    // NOTE: This current implementation will override presses if the PubSub fills up. If there
+    // is no more space to put another `InputLevel` into the PubSub, the earliest item in the
+    // channel (that has not been read by everyone yet) will be removed.
+    //
+    // The reason why we are opting for a eventually-consistent high availabilty is to minimize
+    // the amount of time we spend in the interrupt handler. We cannot use yield since
+    // interrupts are synchronous and we cannot block as that would freeze the entire program.
+    // Hence, we opt for a synchronous, non-blocking approach.
     if let Some(new_button_state) = critical_section::with(|cs| {
-        let interrupt_fired = BUTTON.borrow_ref(cs).as_ref().unwrap().is_interrupt_set();
-        let state = BUTTON.borrow_ref(cs).as_ref().unwrap().get_level();
-        BUTTON
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .clear_interrupt();
+        let mut button = BUTTON.borrow_ref_mut(cs);
+        let button = button.as_mut().unwrap();
+        let interrupt_fired = button.is_interrupt_set();
+        let state = button.get_level();
+        button.clear_interrupt();
         interrupt_fired.then_some(state)
     }) {
-        // NOTE: This current implementation will override presses if the PubSub fills up. If there
-        // is no more space to put another `ButtonLevel` into the PubSub, the earliest item in the
-        // channel (that has not been read by everyone yet) will be removed.
-        //
-        // The reason why we are opting for a eventually-consistent high availabilty is to minimize
-        // the amount of time we spend in the interrupt handler. We cannot use yield since
-        // interrupts are synchronous and we cannot block as that would freeze the entire program.
-        // Hence, we opt for a synchronous, non-blocking approach.
         debug!("button interrupt");
-        let now = Instant::now();
         match INPUT_CHANNEL
             .immediate_publisher()
-            .try_publish(ButtonLevel {
+            .try_publish(InputType::Button(InputLevel {
                 ts: now,
                 level: new_button_state,
-            }) {
+            })) {
             Ok(_) => {}
             Err(_) => {
-                warn!("Button: Input PubSub is full.")
+                warn!("Button: Input PubSub is full.");
             }
         }
     }
-}
-
-enum TimerSignal {
-    StartTimer(Instant),
-    EndTimer(Instant, Instant),
-}
-#[embassy_executor::task]
-async fn handle_photodiode(
-    photodiode: &'static Photodiode,
-    signal_timer: &'static Signal<CriticalSectionRawMutex, TimerSignal>,
-    cancel: &'static Signal<CriticalSectionRawMutex, ()>,
-) {
-    let starttime = {
-        let mut lock = photodiode.lock().await;
-        let photodiode = lock.as_mut().unwrap();
-        #[allow(clippy::let_and_return)]
-        let start = match select(pin!(photodiode.wait_for_high()), cancel.wait()).await {
-            Either::Left((_, _)) => {
-                let start = Instant::now();
-                signal_timer.signal(TimerSignal::StartTimer(start));
-                debug!("Start signaled: {}", start);
-                start
+    if let Some(new_photodiode_state) = critical_section::with(|cs| {
+        let mut photodiode = PHOTODIODE_INPUT.borrow_ref_mut(cs);
+        let photodiode = photodiode.as_mut().unwrap();
+        let interrupt_fired = photodiode.is_interrupt_set();
+        let state = photodiode.get_level();
+        photodiode.clear_interrupt();
+        interrupt_fired.then_some(state)
+    }) {
+        debug!("photodiode interrupt");
+        match INPUT_CHANNEL
+            .immediate_publisher()
+            .try_publish(InputType::Photodiode(InputLevel {
+                ts: now,
+                level: new_photodiode_state,
+            })) {
+            Ok(_) => {}
+            Err(_) => {
+                warn!("Diode: Input PubSub is full.");
             }
-            Either::Right((_, _)) => {
-                cancel.reset();
-                return;
-            }
-        };
-        start
-    };
-    {
-        let mut lock = photodiode.lock().await;
-        let photodiode = lock.as_mut().unwrap();
-        debug!("Waiting for laser beam to reconnect ...");
-        match select(pin!(photodiode.wait_for_low()), cancel.wait()).await {
-            Either::Left((_, _)) => {}
-            Either::Right((_, _)) => {
-                cancel.reset();
-                return;
-            }
-        };
-    }
-    {
-        let mut lock = photodiode.lock().await;
-        let photodiode = lock.as_mut().unwrap();
-        debug!("Waiting for laser beam to break ...");
-        match select(pin!(photodiode.wait_for_high()), cancel.wait()).await {
-            Either::Left((_, _)) => {
-                let endtime = Instant::now();
-                signal_timer.signal(TimerSignal::EndTimer(starttime, endtime));
-                debug!("Stop signaled: {}", endtime);
-            }
-            Either::Right((_, _)) => {
-                cancel.reset();
-            }
-        };
+        }
     }
 }
 
@@ -304,35 +269,6 @@ async fn handle_segment_display(
     }
 }
 
-#[embassy_executor::task]
-async fn check_laser_is_aligned(
-    photodiode: &'static Photodiode,
-    is_ready: &'static Signal<CriticalSectionRawMutex, ()>,
-) {
-    const HOLD_TIME_MSECS: u64 = 3000;
-    let mut ticker = Ticker::every(Duration::from_millis(100));
-    loop {
-        let mut lock = photodiode.lock().await;
-        let photodiode = lock.as_mut().unwrap();
-        match select(
-            Timer::after_millis(HOLD_TIME_MSECS),
-            pin!(photodiode.wait_for_high()),
-        )
-        .await
-        {
-            Either::Left((_, _)) => {
-                is_ready.signal(());
-                return;
-            }
-            Either::Right((_, _)) => {
-                info!("Beam was broken prematurely");
-                ticker.next().await;
-                ticker.reset();
-            }
-        };
-    }
-}
-
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     heap_allocator!(32_168);
@@ -342,8 +278,11 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     io.set_interrupt_handler(handle_gpio);
-    let photodiode = Input::new(io.pins.gpio0, Pull::Down);
-    PHOTODIODE_INPUT.lock().await.replace(photodiode);
+    let mut photodiode = Input::new(io.pins.gpio0, Pull::Down);
+    critical_section::with(|cs| {
+        photodiode.listen(Event::AnyEdge);
+        PHOTODIODE_INPUT.replace(cs, Some(photodiode));
+    });
     let mut button = Input::new(io.pins.gpio9, Pull::Up);
     critical_section::with(|cs| {
         button.listen(Event::AnyEdge);
@@ -365,13 +304,24 @@ async fn main(spawner: Spawner) -> ! {
         display.initialize().await.unwrap();
     display.set_brightness(15).await.unwrap();
 
-    let mut start_time = None;
-    let mut end_time = None;
-
     let mut ticker = Ticker::every(Duration::from_millis(1));
 
     let mut button_is_down = false;
+    let mut photodiode_state = critical_section::with(|cs| {
+        (
+            Instant::now(),
+            PHOTODIODE_INPUT
+                .borrow_ref(cs)
+                .as_ref()
+                .unwrap()
+                .get_level(),
+        )
+    });
+    if photodiode_state.1 == Level::Low {
+        warn!("Photodiode is already high without the laser on. Is the diode exposed to light?");
+    }
     let mut input_sub = INPUT_CHANNEL.subscriber().unwrap();
+    let mut last_console_print = Instant::now();
 
     let systimer = systimer::SystemTimer::new(peripherals.SYSTIMER).split::<systimer::Target>();
     esp_hal_embassy::init(&clocks, systimer.alarm0);
@@ -394,12 +344,17 @@ async fn main(spawner: Spawner) -> ! {
             // The button was pressed, but the final value of button_is_down will be false
             // However, we would want to move to the Prepare state due to the press
             // Same thing *can* happen with the photodiode (rare but not infeasible)
-            match input.level {
-                Level::High => {
-                    button_is_down = false;
-                }
-                Level::Low => {
-                    button_is_down = true;
+            match input {
+                InputType::Button(input) => match input.level {
+                    Level::High => {
+                        button_is_down = false;
+                    }
+                    Level::Low => {
+                        button_is_down = true;
+                    }
+                },
+                InputType::Photodiode(input) => {
+                    photodiode_state = (input.ts, input.level);
                 }
             }
         }
@@ -412,90 +367,107 @@ async fn main(spawner: Spawner) -> ! {
                 if button_is_down {
                     // If press, go to Prepare
                     PHOTOGATE_READY.reset();
+                    if critical_section::with(|cs| {
+                        PHOTODIODE_INPUT.borrow_ref(cs).as_ref().unwrap().is_low()
+                    }) {
+                        warn!("Photodiode is already high without the laser on. Is the diode exposed to light?");
+                    }
                     // FIXME: Current implementation with button interrupt code and pubsub channel
                     // processing can cause a backlog of responses in the pubsub queue which
                     // affectively DoS the device
-                    match spawner.spawn(check_laser_is_aligned(&PHOTODIODE_INPUT, &PHOTOGATE_READY))
-                    {
-                        Ok(_) => {
-                            *(STATE.lock().await.deref_mut()) = FSMStates::Prepare;
-                            DISPLAY_COMMAND.signal(DisplayCommand::Pending);
-                            info!("Preparing photogate for timing ...");
-                            info!("Hold still ...");
-                        }
-                        Err(e) => error!(
-                            "Error occurred when trying to spawn photodiode preparation task {:?}",
-                            e
-                        ),
-                    }
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Prepare;
+                    DISPLAY_COMMAND.signal(DisplayCommand::Pending);
+                    info!("Preparing photogate for timing ...");
+                    info!("Hold still ...");
+                    photodiode_state.0 = Instant::now();
+                    photodiode_state.1 = Level::High;
                 }
             }
             FSMStates::Prepare => {
                 // Wait for laser to be aligned correctly
                 // Photogate signal should remain low for extended period of time
                 // Move to Ready once complete
+                const CALIBRATION_TIME: Duration = Duration::from_secs(3);
+                const PRINT_DELAY: Duration = Duration::from_millis(500);
                 laser.set_high();
-                if PHOTOGATE_READY.signaled() {
-                    TIMER_SIGNAL.reset();
+                if photodiode_state.1 == Level::Low
+                    && photodiode_state.0 + CALIBRATION_TIME <= Instant::now()
+                {
                     CANCEL_SIGNAL.reset();
-                    match spawner.spawn(handle_photodiode(
-                        &PHOTODIODE_INPUT,
-                        &TIMER_SIGNAL,
-                        &CANCEL_SIGNAL,
-                    )) {
-                        Ok(_) => {
-                            *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
-                            PHOTOGATE_READY.reset();
-                            DISPLAY_COMMAND.signal(DisplayCommand::Zero);
-                            info!("Photogate is ready!");
-                        }
-                        Err(e) => error!(
-                            "Error occurred when trying to spawn photodiode task: {:?}",
-                            e
-                        ),
-                    }
+
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Ready;
+                    PHOTOGATE_READY.reset();
+                    DISPLAY_COMMAND.signal(DisplayCommand::Zero);
+                    info!("Photogate is ready!");
+                    continue;
+                }
+                let now = Instant::now();
+                if last_console_print + PRINT_DELAY <= now
+                    && critical_section::with(|cs| {
+                        PHOTODIODE_INPUT.borrow_ref(cs).as_ref().unwrap().is_high()
+                    })
+                {
+                    info!("Beam was broken prematurely");
+                    last_console_print = now;
                 }
             }
-            FSMStates::Ready | FSMStates::TimerRunning => {
+            FSMStates::Ready => {
+                laser.set_high();
+
+                if button_is_down {
+                    CANCEL_SIGNAL.signal(());
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
+                    continue;
+                }
+                if photodiode_state.1 == Level::High {
+                    info!("Photogate beam was broken. Timer started");
+                    let start = photodiode_state.0;
+                    DISPLAY_COMMAND.signal(DisplayCommand::StartTimer(start));
+                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerStart { start };
+                }
+            }
+            FSMStates::TimerStart { start } => {
+                laser.set_high();
+                if button_is_down {
+                    CANCEL_SIGNAL.signal(());
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
+                    continue;
+                }
+                if photodiode_state.1 == Level::Low {
+                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerRunning { start };
+                }
+            }
+            FSMStates::TimerRunning { start } => {
                 laser.set_high();
 
                 if button_is_down {
                     CANCEL_SIGNAL.signal(());
                     *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
                 }
-                if let Some(timer_event) = TIMER_SIGNAL.try_take() {
-                    match timer_event {
-                        TimerSignal::StartTimer(start) => {
-                            info!("Photogate beam was broken. Timer started");
-                            DISPLAY_COMMAND.signal(DisplayCommand::StartTimer(start));
-                            *(STATE.lock().await.deref_mut()) = FSMStates::TimerRunning;
-                        }
-                        TimerSignal::EndTimer(start, end) => {
-                            (start_time, end_time) = (Some(start), Some(end));
-                            info!("Photogate beam was broken. Timer ended");
-                            DISPLAY_COMMAND.signal(DisplayCommand::EndTimer { start, end });
-                            *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd;
-                        }
-                    }
-                }
-            }
-            FSMStates::TimerEnd => {
-                laser.set_low(); // FIX: Keep beam on for ~1-2 seconds to allow for human
-                                 // timing if needed
-
-                // Display time
-                if let (Some(start), Some(end)) = (start_time, end_time) {
+                if photodiode_state.1 == Level::High {
+                    info!("Photogate beam was broken. Timer ended");
+                    let end = photodiode_state.0;
+                    // Display time
+                    DISPLAY_COMMAND.signal(DisplayCommand::EndTimer { start, end });
                     let duration = end.duration_since(start);
                     info!(
                         "Time: {}",
                         (duration.as_micros() as f64) / (SECS_TO_MICROS as f64)
                     );
-                    start_time = None;
-                    end_time = None;
-                } else {
-                    warn!("Time was not able to be calculated!");
+                    *(STATE.lock().await.deref_mut()) = FSMStates::TimerEnd { start, end };
                 }
-                *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
+            }
+            FSMStates::TimerEnd { start: _, end } => {
+                const LASER_ON_DELAY: u64 = 3;
+                if button_is_down {
+                    CANCEL_SIGNAL.signal(());
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
+                }
+                if end + Duration::from_secs(LASER_ON_DELAY) <= Instant::now() {
+                    // Keep beam on for ~1-2 seconds to allow for human timing if needed
+                    laser.set_low();
+                    *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
+                }
             }
         }
     }
