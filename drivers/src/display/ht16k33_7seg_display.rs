@@ -1,6 +1,7 @@
-//! Module related to drivers for driving a 7-segment display with the HT16K33 chip. The most
-//! common setup that uses the HT16K33 is Adafruit's 0.56" 7-segment display backpack which uses
-//! the HT16K33 to provide I2C communication from microcontrollers to the display.
+//! Module related to drivers for driving a 7-segment display with the HT16K33 chip
+//!
+//! The most common setup that uses the HT16K33 is Adafruit's 0.56" 7-segment display backpack
+//! which uses the HT16K33 to provide I2C communication from microcontrollers to the display.
 //!
 //! The module contains two types of variants, and syncrhonous driver and an asynchronous driver.
 
