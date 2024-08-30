@@ -333,6 +333,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.must_spawn(handle_button(button, INPUT_CHANNEL.sender()));
     spawner.must_spawn(handle_segment_display(display, &DISPLAY_COMMAND));
     loop {
+        ticker.next().await;
         // Use embassy_sync::channel::Channel and have here receive messages from input tasks
         // This ensures events and signals from inputs are all handled and none are skipped.
         //
@@ -450,6 +451,5 @@ async fn main(spawner: Spawner) -> ! {
                 *(STATE.lock().await.deref_mut()) = FSMStates::Idle;
             }
         }
-        ticker.next().await;
     }
 }
