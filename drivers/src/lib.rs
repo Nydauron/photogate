@@ -1,5 +1,4 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(lint_reasons)]
 #![allow(
     incomplete_features,
     reason = "Drivers use constant generics to calculate the needed buffer sizes"
